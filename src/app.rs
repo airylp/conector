@@ -1382,7 +1382,7 @@ impl App {
         let has_sql = self.console.tabs.get(d.tab).is_some_and(|t| !t.sql.is_empty());
         let loaded = self.console.tabs.get(d.tab).map_or(0, |t| t.rows.len());
         let connected = self.console.session.as_ref().is_some_and(|(s, _)| !s.is_empty());
-        Window::new(t!("Exportar")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+        Window::new(t!("Exportar")).id(win_id(Win::Export)).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             Grid::new("exportar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label(t!("Formato"));
                 ui.horizontal(|ui| {
@@ -1452,7 +1452,7 @@ impl App {
         let mut reload = false;
         let mut new_file = false;
         let busy = self.import_job.is_some();
-        Window::new(t!("Importar CSV")).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+        Window::new(t!("Importar CSV")).id(win_id(Win::Import)).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
             Grid::new("importar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                 ui.label(t!("Archivo"));
                 ui.horizontal(|ui| {
@@ -2300,7 +2300,7 @@ impl App {
         let entries = self.history(&conn);
         let mut open = self.console.show_history;
         let mut pick: Option<(String, bool)> = None;
-        Window::new(t!("Historial de SQL")).open(&mut open).default_size([520.0, 420.0]).show(ctx, |ui| {
+        Window::new(t!("Historial de SQL")).id(win_id(Win::History)).open(&mut open).default_size([520.0, 420.0]).show(ctx, |ui| {
             ui.add(TextEdit::singleline(&mut self.console.history_filter).hint_text(t!("🔎 Filtrar")).desired_width(f32::INFINITY));
             ui.weak(t!("Clic: copiar al editor · Doble clic: ejecutar"));
             let q = self.console.history_filter.to_lowercase();
@@ -2343,7 +2343,7 @@ impl App {
         let mut apply = false;
         let mut pick = false;
         let mut action: Option<u8> = None;
-        Window::new(t!("Ajustes")).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+        Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
             ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
                 let s = &mut self.settings_edit;
                 ui.heading(t!("General"));
@@ -2516,13 +2516,13 @@ impl App {
         let name = self.form.as_ref().map(|f| f.conn.name.clone()).unwrap_or_default();
         let mut close = false;
         let mut delete = false;
-        Window::new(t!("Borrar conexión")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+        Window::new(t!("Borrar conexión")).id(win_id(Win::Delete)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
             ui.label(tf!("¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.", nombre = name));
             ui.horizontal(|ui| {
                 if ui.button(t!("Borrar")).clicked() {
                     delete = true;
                 }
-                if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.button(t!("Cancelar")).clicked() {
                     close = true;
                 }
             });
@@ -2533,6 +2533,43 @@ impl App {
         if delete || close {
             self.confirm_delete = false;
         }
+    }
+
+    fn is_open(&self, w: Win) -> bool {
+        match w {
+            Win::Delete => self.confirm_delete,
+            Win::Export => self.export_dialog.is_some(),
+            // Con una importación en marcha la ventana no se cierra.
+            Win::Import => self.import_dialog.is_some() && self.import_job.is_none(),
+            Win::History => self.console.show_history,
+            Win::Settings => self.show_settings,
+        }
+    }
+
+    fn close(&mut self, w: Win) {
+        match w {
+            Win::Delete => self.confirm_delete = false,
+            Win::Export => self.export_dialog = None,
+            Win::Import => self.import_dialog = None,
+            Win::History => self.console.show_history = false,
+            Win::Settings => self.show_settings = false,
+        }
+    }
+
+    /// Escape cierra la ventana de delante (o la última abierta). Si hay un
+    /// desplegable abierto, Escape es para él (lo cierra egui).
+    fn escape_closes(&mut self, ctx: &Context) {
+        if !ctx.input(|i| i.key_pressed(Key::Escape)) || ctx.any_popup_open() {
+            return;
+        }
+        // Orden de prioridad si no se sabe cuál está delante.
+        let open: Vec<Win> = [Win::Delete, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
+        let Some(first) = open.first().copied() else { return };
+        let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
+        let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
+        self.close(target);
+        // Que el Escape no llegue además a otra cosa este fotograma.
+        ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
@@ -2601,6 +2638,12 @@ impl App {
             }
             if std::env::var_os("CONECTOR_AJUSTES").is_some() {
                 self.show_settings = true;
+            }
+            if std::env::var_os("CONECTOR_HISTORIAL").is_some() {
+                self.console.show_history = true;
+            }
+            if std::env::var_os("CONECTOR_BORRAR").is_some() {
+                self.confirm_delete = true;
             }
         }
         if let Ok(sch) = std::env::var("CONECTOR_TABLAS") {
@@ -2712,6 +2755,20 @@ fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usiz
         }
     }
     job
+}
+
+/// Ventanas que Escape puede cerrar.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Win {
+    Delete,
+    Export,
+    Import,
+    History,
+    Settings,
+}
+
+fn win_id(w: Win) -> Id {
+    Id::unique(("ventana", w as u8))
 }
 
 fn split_cols(m: &Msg) -> Vec<(String, String)> {
@@ -2826,11 +2883,26 @@ impl eframe::App for App {
         crate::tunnel::close_all();
     }
 
+    /// Pruebas: CONECTOR_TECLAS='40:esc,60:esc' pulsa Escape en esos fotogramas.
+    fn raw_input_hook(&mut self, _ctx: &Context, raw: &mut RawInput) {
+        let Ok(keys) = std::env::var("CONECTOR_TECLAS") else { return };
+        for k in keys.split(',') {
+            if let Some((f, "esc")) = k.split_once(':') {
+                if f.trim().parse() == Ok(self.debug_frames) {
+                    for pressed in [true, false] {
+                        raw.events.push(eframe::egui::Event::Key { key: Key::Escape, physical_key: None, pressed, repeat: false, modifiers: Modifiers::NONE });
+                    }
+                }
+            }
+        }
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_bridge();
         self.check_timeouts(&ctx);
         self.debug_capture(&ctx);
+        self.escape_closes(&ctx);
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
         }
