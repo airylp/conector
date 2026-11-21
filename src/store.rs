@@ -614,8 +614,10 @@ mod tests {
         std::fs::write(dir.join("drivers/leeme.txt"), "").unwrap();
         let c = Conn::new();
         assert_eq!(c.jar_paths(&dir), vec![dir.join("drivers/a.JAR"), dir.join("drivers/b.jar")]);
-        let c = Conn { jars: vec!["/opt/x.jar".into()], ..Conn::new() };
-        assert_eq!(c.jar_paths(&dir), vec![PathBuf::from("/opt/x.jar")]);
+        // Ruta absoluta (en cualquier sistema) y relativa al catálogo.
+        let abs = std::env::temp_dir().join("x.jar");
+        let c = Conn { jars: vec![abs.display().to_string(), "libs/y.jar".into()], ..Conn::new() };
+        assert_eq!(c.jar_paths(&dir), vec![abs, dir.join("libs/y.jar")]);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

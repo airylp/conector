@@ -347,6 +347,8 @@ done"#;
         b.rx.recv_timeout(Duration::from_secs(5)).expect("sin respuesta")
     }
 
+    /// El auxiliar falso es un script de sh: solo en Unix.
+    #[cfg(unix)]
     #[test]
     fn fake_helper_roundtrip_and_restart() {
         // SAFETY: solo este test usa CONECTOR_AUXILIAR.
