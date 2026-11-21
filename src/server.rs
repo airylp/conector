@@ -10,15 +10,16 @@
 //!   POST /v1/conexiones/{id}/consulta[?max=N]  cuerpo = SQL → columnas y filas
 //!   GET  /v1/cambios?firma=F                 espera (≤25 s) a que cambie el catálogo
 //!
-//! Sin TLS: usar en una red de confianza, VPN o túnel SSH. Las contraseñas no
-//! salen por la red salvo que se active expresamente.
+//! Con TLS (por defecto, ver `tls`) o, si se desactiva, HTTP en claro (solo
+//! para una red de confianza, VPN o túnel SSH). Las contraseñas no salen por
+//! la red salvo que se active expresamente.
 
 use crate::bridge::{self, Bridge, Event, Handle};
 use crate::proto::Msg;
 use crate::store::{Catalog, Conn, Secrets};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{TcpListener, TcpStream};
+use std::net::TcpListener;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -36,6 +37,8 @@ pub struct Config {
     pub catalog: PathBuf,
     pub java: bridge::Config,
     pub max_rows: u32,
+    /// TLS; `None` = HTTP en claro.
+    pub tls: Option<Arc<rustls::ServerConfig>>,
 }
 
 type Routes = Arc<Mutex<HashMap<u64, Sender<Result<Msg, String>>>>>;
@@ -79,9 +82,12 @@ pub fn start(cfg: Config) -> Result<Server, String> {
         .spawn(move || {
             while !st.load(Ordering::Relaxed) {
                 match listener.accept() {
-                    Ok((stream, _)) => {
+                    Ok((mut stream, _)) => {
                         if hub.clients.load(Ordering::Relaxed) >= MAX_CLIENTS {
-                            let _ = respond(&stream, 503, &err_json("demasiadas peticiones a la vez"));
+                            // En TLS no se puede contestar sin el saludo: se corta.
+                            if hub.cfg.tls.is_none() {
+                                let _ = respond(&mut stream, 503, &err_json("demasiadas peticiones a la vez"));
+                            }
                             continue;
                         }
                         hub.clients.fetch_add(1, Ordering::Relaxed);
@@ -89,7 +95,18 @@ pub fn start(cfg: Config) -> Result<Server, String> {
                         std::thread::spawn(move || {
                             let _ = stream.set_nonblocking(false);
                             let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
-                            handle(&h, stream);
+                            let _ = stream.set_write_timeout(Some(Duration::from_secs(30)));
+                            match &h.cfg.tls {
+                                Some(cfg) => {
+                                    if let Ok(conn) = rustls::ServerConnection::new(cfg.clone()) {
+                                        let mut s = rustls::StreamOwned::new(conn, stream);
+                                        handle(&h, &mut s);
+                                        s.conn.send_close_notify();
+                                        let _ = s.flush();
+                                    }
+                                }
+                                None => handle(&h, &mut stream),
+                            }
                             h.clients.fetch_sub(1, Ordering::Relaxed);
                         });
                     }
@@ -175,7 +192,7 @@ struct Request {
     body: String,
 }
 
-fn read_request(stream: &TcpStream) -> Result<Request, (u16, String)> {
+fn read_request<S: Read>(stream: &mut S) -> Result<Request, (u16, String)> {
     let mut r = BufReader::new(stream);
     let mut line = String::new();
     r.read_line(&mut line).map_err(|e| (400, e.to_string()))?;
@@ -235,7 +252,7 @@ fn decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn respond(mut stream: &TcpStream, code: u16, body: &str) -> std::io::Result<()> {
+fn respond<S: Write>(stream: &mut S, code: u16, body: &str) -> std::io::Result<()> {
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
@@ -261,13 +278,13 @@ fn same(a: &str, b: &str) -> bool {
     a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-fn handle(hub: &Hub, stream: TcpStream) {
-    let (code, body) = match read_request(&stream) {
+fn handle<S: Read + Write>(hub: &Hub, stream: &mut S) {
+    let (code, body) = match read_request(stream) {
         Err((c, e)) => (c, err_json(&e)),
         Ok(req) if !req.auth.as_deref().is_some_and(|t| same(t, hub.cfg.token.trim())) => (401, err_json("falta el token o no es válido (Authorization: Bearer …)")),
         Ok(req) => dispatch(hub, &req),
     };
-    let _ = respond(&stream, code, &body);
+    let _ = respond(stream, code, &body);
 }
 
 fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
@@ -460,6 +477,7 @@ pub fn conn_json(c: &Conn, password: Option<&str>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpStream;
 
     fn http(addr: &str, req: &str) -> (u16, String) {
         let mut s = TcpStream::connect(addr).unwrap();
@@ -490,6 +508,7 @@ mod tests {
             catalog: dir.clone(),
             java: bridge::Config::default(),
             max_rows: 10,
+            tls: None,
         };
         assert!(start(Config { token: "corto".into(), ..cfg.clone() }).is_err());
         let srv = start(cfg).unwrap();
@@ -509,6 +528,54 @@ mod tests {
         assert_eq!(code, 404);
         let (code, body) = http(&a, &format!("GET /v1/estado HTTP/1.1\r\n{auth}\r\n"));
         assert!(code == 200 && body.contains("\"conexiones\":1"), "{body}");
+        drop(srv);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// HTTPS con certificado autofirmado: un cliente que confía en ese
+    /// certificado conecta; uno que no lo conoce es rechazado.
+    #[test]
+    fn serves_over_tls() {
+        let dir = crate::store::temp_dir("servicio-tls");
+        let (cert, key) = (dir.join("c.pem"), dir.join("k.pem"));
+        crate::tls::create_self_signed(&cert, &key).unwrap();
+        let t = crate::tls::load(cert.to_str().unwrap(), key.to_str().unwrap()).unwrap();
+        assert_eq!(t.fingerprint.len(), 32 * 3 - 1);
+        let cfg = Config {
+            addr: "127.0.0.1:0".into(),
+            token: "0123456789abcdef0123".into(),
+            share_passwords: false,
+            catalog: dir.clone(),
+            java: bridge::Config::default(),
+            max_rows: 10,
+            tls: Some(t.config.clone()),
+        };
+        let srv = start(cfg).unwrap();
+        let client = |roots: rustls::RootCertStore| -> Result<String, String> {
+            let cc = rustls::ClientConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            let conn = rustls::ClientConnection::new(Arc::new(cc), "localhost".try_into().unwrap()).unwrap();
+            let mut s = rustls::StreamOwned::new(conn, TcpStream::connect(&srv.addr).unwrap());
+            s.write_all(b"GET /v1/estado HTTP/1.1\r\nAuthorization: Bearer 0123456789abcdef0123\r\n\r\n").map_err(|e| e.to_string())?;
+            let mut out = String::new();
+            match s.read_to_string(&mut out) {
+                Ok(_) => Ok(out),
+                // Algunos servidores cierran sin close_notify; con respuesta completa vale.
+                Err(e) if !out.is_empty() => Ok(format!("{out}{e:?}")),
+                Err(e) => Err(e.to_string()),
+            }
+        };
+        let mut roots = rustls::RootCertStore::empty();
+        for c in rustls::pki_types::CertificateDer::pem_file_iter(&cert).unwrap() {
+            roots.add(c.unwrap()).unwrap();
+        }
+        use rustls::pki_types::pem::PemObject;
+        let ok = client(roots).unwrap();
+        assert!(ok.starts_with("HTTP/1.1 200") && ok.contains("\"conexiones\":0"), "{ok}");
+        assert!(client(rustls::RootCertStore::empty()).is_err(), "sin confiar en el certificado debe fallar");
         drop(srv);
         let _ = std::fs::remove_dir_all(dir);
     }

@@ -62,7 +62,7 @@ vuelve a cifrar todas.
 
 ## Servicio de red
 
-Ajustes → Servicio de red, o `conector --servir`. HTTP + JSON con token
+Ajustes → Servicio de red, o `conector --servir`. HTTPS + JSON con token
 (`Authorization: Bearer …`):
 
 | Método | Ruta | |
@@ -74,14 +74,20 @@ Ajustes → Servicio de red, o `conector --servir`. HTTP + JSON con token
 | POST | `/v1/conexiones/{id}/consulta[?max=N]` | cuerpo = SQL → columnas y filas |
 | GET | `/v1/cambios?firma=F` | espera (≤25 s) a que cambie el catálogo |
 
-    curl -H "Authorization: Bearer $TOKEN" http://equipo:7470/v1/conexiones
-    curl -XPOST -H "Authorization: Bearer $TOKEN" --data 'select * from clientes' \
-         'http://equipo:7470/v1/conexiones/h2/consulta?max=100'
+    curl --cacert servicio-cert.pem -H "Authorization: Bearer $TOKEN" https://equipo:7470/v1/conexiones
+    curl --cacert servicio-cert.pem -XPOST -H "Authorization: Bearer $TOKEN" \
+         --data 'select * from clientes' 'https://equipo:7470/v1/conexiones/h2/consulta?max=100'
 
-Sin TLS: úsalo en una red de confianza, VPN o túnel SSH.
+TLS (rustls) activo por defecto. Sin certificado propio (`servir_cert=` y
+`servir_clave_tls=`, PEM) se crea uno autofirmado la primera vez en la carpeta
+de configuración (`servicio-cert.pem`; la clave con permisos 600), válido para
+localhost, el nombre del equipo y su IP local. Los clientes confían en ese
+archivo (`--cacert`) o fijan su huella SHA-256 (se muestra en Ajustes y al
+arrancar `--servir`). `servir_tls=no` vuelve a HTTP en claro (solo para redes de
+confianza).
 
 ## Desarrollo
 
-    cargo test --release                       # 17 tests
+    cargo test --release                       # 18 tests
     cargo test --release descargas -- --ignored  # descargas reales (red)
     scripts/compilar-auxiliar.sh               # tras cambiar ConectorHelper.java

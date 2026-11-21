@@ -11,6 +11,7 @@ mod javadl;
 mod proto;
 mod server;
 mod store;
+mod tls;
 
 use std::process::ExitCode;
 
@@ -26,8 +27,8 @@ Uso:
   conector --clave ID        guarda la contraseña de ID compartida y cifrada
                              (de CONECTOR_CLAVE o de la entrada)
   conector --servir [DIR:PUERTO]
-                             servicio HTTP+JSON para otros programas (por defecto
-                             el de Ajustes, 0.0.0.0:7470); muestra el token
+                             servicio HTTPS+JSON para otros programas (por defecto
+                             el de Ajustes, 0.0.0.0:7470); muestra token y huella
 
 Variables: CONECTOR_CATALOGO (otra carpeta de catálogo), CONECTOR_CLAVE
 (contraseña para --probar si no está recordada), JAVA_HOME.";
@@ -194,7 +195,19 @@ fn serve(addr: Option<String>) -> ExitCode {
             eprintln!("No se pudo guardar el token: {e}");
         }
     }
+    let tls = if s.serve_tls {
+        match tls::load(&s.serve_cert, &s.serve_key) {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("TLS: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
     let cfg = server::Config {
+        tls: tls.as_ref().map(|t| t.config.clone()),
         addr: addr.unwrap_or_else(|| s.serve_addr.clone()),
         token: s.serve_token.clone(),
         share_passwords: s.serve_passwords,
@@ -204,9 +217,25 @@ fn serve(addr: Option<String>) -> ExitCode {
     };
     match server::start(cfg.clone()) {
         Ok(srv) => {
-            println!("Sirviendo {} en http://{}", cfg.catalog.display(), srv.addr);
+            let scheme = if tls.is_some() { "https" } else { "http" };
+            println!("Sirviendo {} en {scheme}://{}", cfg.catalog.display(), srv.addr);
             println!("Token: {}", cfg.token);
-            println!("Prueba: curl -H 'Authorization: Bearer {}' http://{}/v1/conexiones", cfg.token, srv.addr);
+            match &tls {
+                Some(t) => {
+                    println!("Certificado: {}", t.cert_path.display());
+                    println!("Huella SHA-256: {}", t.fingerprint);
+                    println!(
+                        "Prueba: curl --cacert '{}' -H 'Authorization: Bearer {}' https://localhost:{}/v1/conexiones",
+                        t.cert_path.display(),
+                        cfg.token,
+                        srv.addr.rsplit(':').next().unwrap_or("7470")
+                    );
+                }
+                None => {
+                    println!("AVISO: sin TLS (servir_tls=no): todo viaja en claro.");
+                    println!("Prueba: curl -H 'Authorization: Bearer {}' http://{}/v1/conexiones", cfg.token, srv.addr);
+                }
+            }
             loop {
                 std::thread::park();
             }

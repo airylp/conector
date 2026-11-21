@@ -381,6 +381,11 @@ pub struct Settings {
     pub serve_token: String,
     /// Entregar contraseñas por la red (`?clave=1`). Desactivado por defecto.
     pub serve_passwords: bool,
+    /// HTTPS (por defecto); `false` = HTTP en claro.
+    pub serve_tls: bool,
+    /// Certificado y clave propios (PEM); vacíos = autofirmado (ver `tls`).
+    pub serve_cert: String,
+    pub serve_key: String,
     /// Idioma de la interfaz («es», «en», «fr»); `None` = el del sistema.
     pub lang: Option<String>,
 }
@@ -396,7 +401,7 @@ pub fn new_token() -> String {
 
 impl Settings {
     pub fn load() -> Settings {
-        let mut s = Settings { max_rows: 1000, serve_addr: DEFAULT_SERVE_ADDR.into(), ..Default::default() };
+        let mut s = Settings { max_rows: 1000, serve_addr: DEFAULT_SERVE_ADDR.into(), serve_tls: true, ..Default::default() };
         let text = config_dir().and_then(|d| std::fs::read_to_string(d.join("ajustes.txt")).ok()).unwrap_or_default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
@@ -411,6 +416,9 @@ impl Settings {
                 "servir_en" if !v.is_empty() => s.serve_addr = v,
                 "servir_token" => s.serve_token = v,
                 "servir_claves" => s.serve_passwords = v == "si",
+                "servir_tls" => s.serve_tls = v != "no",
+                "servir_cert" => s.serve_cert = v,
+                "servir_clave_tls" => s.serve_key = v,
                 "idioma" if !v.is_empty() => s.lang = Some(v),
                 _ => {}
             }
@@ -426,7 +434,7 @@ impl Settings {
         std::fs::create_dir_all(&dir)?;
         let yn = |b: bool| if b { "si" } else { "no" };
         let mut t = format!(
-            "catalogo={}\njava={}\njvm={}\nfilas={}\nservir={}\nservir_en={}\nservir_token={}\nservir_claves={}\n",
+            "catalogo={}\njava={}\njvm={}\nfilas={}\nservir={}\nservir_en={}\nservir_token={}\nservir_claves={}\nservir_tls={}\nservir_cert={}\nservir_clave_tls={}\n",
             self.catalog,
             self.java,
             self.jvm,
@@ -434,7 +442,10 @@ impl Settings {
             yn(self.serve),
             self.serve_addr,
             self.serve_token,
-            yn(self.serve_passwords)
+            yn(self.serve_passwords),
+            yn(self.serve_tls),
+            self.serve_cert,
+            self.serve_key
         );
         if let Some(d) = self.dark {
             t.push_str(if d { "tema=oscuro\n" } else { "tema=claro\n" });

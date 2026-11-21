@@ -144,7 +144,6 @@ Nuevo	New	Nouveau
 Copiar	Copy	Copier
 Contraseñas	Passwords	Mots de passe
 Entregarlas por la red (?clave=1)	Hand them out over the network (?clave=1)	Les fournir par le réseau (?clave=1)
-⚠ Sin TLS: actívalo solo en una red de confianza, VPN o túnel SSH.	⚠ No TLS: enable only on a trusted network, VPN or SSH tunnel.	⚠ Sans TLS : à activer uniquement sur un réseau de confiance, VPN ou tunnel SSH.
 Aplicar	Apply	Appliquer
 Borrar conexión	Delete connection	Supprimer la connexion
 ¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.	Delete “{nombre}” from the catalog? It also disappears on the other computers sharing it.	Supprimer « {nombre} » du catalogue ? Elle disparaît aussi sur les autres ordinateurs qui le partagent.
@@ -154,3 +153,11 @@ Catálogo (clic: copiar la ruta)	Catalog (click: copy the path)	Catalogue (clic 
 📡 Sirviendo en {dir}	📡 Serving on {dir}	📡 Service sur {dir}
 Detalle	Details	Détail
 Copiado: fila {n}, {columna}	Copied: row {n}, {columna}	Copié : ligne {n}, {columna}
+Cifrar con TLS (HTTPS)	Encrypt with TLS (HTTPS)	Chiffrer avec TLS (HTTPS)
+Certificado	Certificate	Certificat
+vacío = autofirmado (se crea solo)	empty = self-signed (created automatically)	vide = auto-signé (créé automatiquement)
+Clave privada	Private key	Clé privée
+PEM, solo con certificado propio	PEM, only with your own certificate	PEM, uniquement avec votre propre certificat
+⚠ Sin TLS todo viaja en claro (también el token): solo en una red de confianza, VPN o túnel SSH.	⚠ Without TLS everything travels in clear text (the token too): only on a trusted network, VPN or SSH tunnel.	⚠ Sans TLS tout circule en clair (le jeton aussi) : uniquement sur un réseau de confiance, VPN ou tunnel SSH.
+Huella SHA-256: {huella}	SHA-256 fingerprint: {huella}	Empreinte SHA-256 : {huella}
+Los clientes confían en el certificado ({ruta}) o fijan su huella.	Clients trust the certificate ({ruta}) or pin its fingerprint.	Les clients font confiance au certificat ({ruta}) ou épinglent son empreinte.

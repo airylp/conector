@@ -274,6 +274,8 @@ pub struct App {
     driver_dl: Option<(javadl::Shared, bool)>,
     server: Option<server::Server>,
     server_err: Option<String>,
+    /// Certificado del servicio (ruta, huella) si va con TLS.
+    server_cert: Option<(String, String)>,
     debug_frames: u32,
 }
 
@@ -334,6 +336,7 @@ impl App {
             driver_dl: None,
             server: None,
             server_err: None,
+            server_cert: None,
             debug_frames: 0,
         };
         app.load_lock();
@@ -356,9 +359,22 @@ impl App {
     fn start_server(&mut self) {
         self.server = None;
         self.server_err = None;
+        self.server_cert = None;
         if !self.settings.serve {
             return;
         }
+        let tls = if self.settings.serve_tls {
+            match crate::tls::load(&self.settings.serve_cert, &self.settings.serve_key) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    self.server_err = Some(format!("TLS: {e}"));
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        self.server_cert = tls.as_ref().map(|t| (t.cert_path.display().to_string(), t.fingerprint.clone()));
         if self.settings.serve_token.trim().len() < 16 {
             self.settings.serve_token = store::new_token();
             self.settings_edit.serve_token = self.settings.serve_token.clone();
@@ -372,6 +388,7 @@ impl App {
             catalog: self.catalog.dir.clone(),
             java: bridge::Config { java: s.java.clone(), jvm_opts: s.jvm.clone() },
             max_rows: s.max_rows,
+            tls: tls.map(|t| t.config),
         };
         // El servicio anterior suelta el puerto en ~50 ms.
         for attempt in 0..5 {
@@ -1027,8 +1044,17 @@ impl App {
         let s = self.settings_edit.clone();
         let java_changed = s.java != self.settings.java || s.jvm != self.settings.jvm;
         let catalog_changed = s.catalog_dir() != self.catalog.dir;
-        let serve_changed = (s.serve, &s.serve_addr, &s.serve_token, s.serve_passwords, s.max_rows)
-            != (self.settings.serve, &self.settings.serve_addr, &self.settings.serve_token, self.settings.serve_passwords, self.settings.max_rows);
+        let serve_changed = (s.serve, &s.serve_addr, &s.serve_token, s.serve_passwords, s.max_rows, s.serve_tls, &s.serve_cert, &s.serve_key)
+            != (
+                self.settings.serve,
+                &self.settings.serve_addr,
+                &self.settings.serve_token,
+                self.settings.serve_passwords,
+                self.settings.max_rows,
+                self.settings.serve_tls,
+                &self.settings.serve_cert,
+                &self.settings.serve_key,
+            );
         if let Err(e) = s.save() {
             self.status = tf!("No se pudieron guardar los ajustes: {e}", e = e);
         }
@@ -1608,12 +1634,37 @@ impl App {
                     ui.label(t!("Contraseñas"));
                     ui.checkbox(&mut s.serve_passwords, t!("Entregarlas por la red (?clave=1)"));
                     ui.end_row();
+                    ui.label("TLS");
+                    ui.checkbox(&mut s.serve_tls, t!("Cifrar con TLS (HTTPS)"));
+                    ui.end_row();
+                    if s.serve_tls {
+                        ui.label(t!("Certificado"));
+                        ui.add(TextEdit::singleline(&mut s.serve_cert).hint_text(t!("vacío = autofirmado (se crea solo)")).desired_width(320.0));
+                        ui.end_row();
+                        ui.label(t!("Clave privada"));
+                        ui.add(TextEdit::singleline(&mut s.serve_key).hint_text(t!("PEM, solo con certificado propio")).desired_width(320.0));
+                        ui.end_row();
+                    }
                 });
-                if s.serve_passwords {
-                    ui.colored_label(ORANGE, t!("⚠ Sin TLS: actívalo solo en una red de confianza, VPN o túnel SSH."));
+                if !s.serve_tls {
+                    ui.colored_label(ORANGE, t!("⚠ Sin TLS todo viaja en claro (también el token): solo en una red de confianza, VPN o túnel SSH."));
                 }
-                let host = s.serve_addr.replace("0.0.0.0", "<este-equipo>");
-                ui.add(Label::new(RichText::new(format!("curl -H 'Authorization: Bearer {}' http://{host}/v1/conexiones", s.serve_token)).monospace().small()).wrap());
+                let host = s.serve_addr.replace("0.0.0.0", "localhost");
+                let curl = match (&self.server_cert, s.serve_tls) {
+                    (Some((path, fp)), true) => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.weak(tf!("Huella SHA-256: {huella}", huella = fp));
+                            if ui.small_button(t!("Copiar")).clicked() {
+                                ui.ctx().copy_text(fp.clone());
+                            }
+                        });
+                        ui.weak(tf!("Los clientes confían en el certificado ({ruta}) o fijan su huella.", ruta = path));
+                        format!("curl --cacert '{path}' -H 'Authorization: Bearer {}' https://{host}/v1/conexiones", s.serve_token)
+                    }
+                    (_, true) => format!("curl --cacert <certificado> -H 'Authorization: Bearer {}' https://{host}/v1/conexiones", s.serve_token),
+                    _ => format!("curl -H 'Authorization: Bearer {}' http://{host}/v1/conexiones", s.serve_token),
+                };
+                ui.add(Label::new(RichText::new(curl).monospace().small()).wrap());
                 ui.add_space(6.0);
                 if ui.button(t!("Aplicar")).clicked() {
                     apply = true;
@@ -1673,7 +1724,8 @@ impl App {
             match (&self.server, &self.server_err) {
                 (Some(s), _) => {
                     ui.separator();
-                    ui.colored_label(GREEN, RichText::new(tf!("📡 Sirviendo en {dir}", dir = s.addr)).small());
+                    let lock = if self.server_cert.is_some() { "🔒 https" } else { "⚠ http" };
+                    ui.colored_label(GREEN, RichText::new(tf!("📡 Sirviendo en {dir}", dir = format!("{lock}://{}", s.addr))).small());
                 }
                 (None, Some(e)) => {
                     ui.separator();
