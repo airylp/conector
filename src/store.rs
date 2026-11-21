@@ -483,6 +483,8 @@ pub struct Settings {
     pub serve_key: String,
     /// Idioma de la interfaz («es», «en», «fr»); `None` = el del sistema.
     pub lang: Option<String>,
+    /// Mirar al arrancar si hay versión nueva (solo avisa).
+    pub check_updates: bool,
 }
 
 pub const DEFAULT_SERVE_ADDR: &str = "0.0.0.0:7470";
@@ -496,7 +498,7 @@ pub fn new_token() -> String {
 
 impl Settings {
     pub fn load() -> Settings {
-        let mut s = Settings { max_rows: 1000, serve_addr: DEFAULT_SERVE_ADDR.into(), serve_tls: true, ..Default::default() };
+        let mut s = Settings { max_rows: 1000, serve_addr: DEFAULT_SERVE_ADDR.into(), serve_tls: true, check_updates: true, ..Default::default() };
         let text = config_dir().and_then(|d| std::fs::read_to_string(d.join("ajustes.txt")).ok()).unwrap_or_default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
@@ -515,6 +517,7 @@ impl Settings {
                 "servir_cert" => s.serve_cert = v,
                 "servir_clave_tls" => s.serve_key = v,
                 "idioma" if !v.is_empty() => s.lang = Some(v),
+                "buscar_actualizaciones" => s.check_updates = v != "no",
                 _ => {}
             }
         }
@@ -548,6 +551,7 @@ impl Settings {
         if let Some(l) = &self.lang {
             t.push_str(&format!("idioma={l}\n"));
         }
+        t.push_str(&format!("buscar_actualizaciones={}\n", yn(self.check_updates)));
         // Lleva el token del servicio: solo para este usuario.
         write_atomic(&dir.join("ajustes.txt"), t.as_bytes(), true)
     }

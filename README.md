@@ -12,6 +12,9 @@ habla JDBC y la interfaz habla con él por stdin/stdout.
 (macOS crea `conector.app`; Linux, `~/.local/bin/conector` con entrada en el menú;
 Windows: instalador de `.github/workflows/windows.yml` o `install.ps1`.)
 
+Para actualizar: ⚙ Ajustes → «Buscar actualizaciones…» (la app avisa al
+arrancar si hay versión nueva), o vuelve a ejecutar el comando.
+
 Necesita Java 8+ para los drivers. Si no hay, la app ofrece **⬇ Descargar Java
 portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
 
@@ -124,6 +127,6 @@ confianza).
 
 ## Desarrollo
 
-    cargo test --release                       # 28 tests
+    cargo test --release                       # 31 tests
     cargo test --release descargas -- --ignored  # descargas reales (red)
     scripts/compilar-auxiliar.sh               # tras cambiar ConectorHelper.java

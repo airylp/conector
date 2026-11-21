@@ -15,6 +15,7 @@ mod sql;
 mod store;
 mod tls;
 mod tunnel;
+mod update;
 
 use std::process::ExitCode;
 

@@ -392,6 +392,9 @@ pub struct App {
     export_job: Option<ExportJob>,
     import_dialog: Option<ImportDialog>,
     import_job: Option<ImportJob>,
+    /// Comprobación/instalación de versión nueva; `show_updater` = ventana visible.
+    updater: Option<crate::update::Updater>,
+    show_updater: bool,
 }
 
 fn new_bridge(ctx: &Context, s: &Settings) -> Bridge {
@@ -457,9 +460,15 @@ impl App {
             export_job: None,
             import_dialog: None,
             import_job: None,
+            updater: None,
+            show_updater: false,
         };
         app.load_lock();
         app.start_server();
+        // Aviso discreto: solo si se instaló con install.sh (lleva commit) y no en pruebas.
+        if app.settings.check_updates && crate::update::SUPPORTED && crate::update::current_commit().is_some() && std::env::var_os("CONECTOR_CAPTURA").is_none() {
+            app.updater = Some(crate::update::Updater::check(cc.egui_ctx.clone()));
+        }
         if let Some(id) = app.entries.first().map(|e| e.conn.id.clone()) {
             app.select(id);
         }
@@ -2343,6 +2352,7 @@ impl App {
         let mut apply = false;
         let mut pick = false;
         let mut action: Option<u8> = None;
+        let mut open_updater = false;
         Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
             ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
                 let s = &mut self.settings_edit;
@@ -2383,6 +2393,13 @@ impl App {
                     ui.end_row();
                 });
                 ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
+                ui.horizontal(|ui| {
+                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
+                    if crate::update::SUPPORTED && ui.button(t!("Buscar actualizaciones…")).clicked() {
+                        open_updater = true;
+                    }
+                    ui.checkbox(&mut s.check_updates, t!("Avisar al arrancar"));
+                });
 
                 ui.separator();
                 ui.heading(t!("Variables de este equipo"));
@@ -2494,6 +2511,9 @@ impl App {
                 }
             });
         });
+        if open_updater {
+            self.open_updater(ctx);
+        }
         match action {
             Some(1) => {
                 self.unlock();
@@ -2535,6 +2555,87 @@ impl App {
         }
     }
 
+    fn open_updater(&mut self, ctx: &Context) {
+        let running = self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running);
+        if !running {
+            self.updater = Some(crate::update::Updater::check(ctx.clone()));
+        }
+        self.show_updater = true;
+    }
+
+    fn updater_window(&mut self, ctx: &Context) {
+        use crate::update::Stage;
+        let Some(u) = &self.updater else { return };
+        let stage = u.stage();
+        let mut open = true;
+        let mut run = false;
+        let mut restart: Option<std::path::PathBuf> = None;
+        Window::new(t!("Actualizar conector")).id(win_id(Win::Updater)).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+            ui.label(tf!("Versión instalada: {v}", v = crate::update::version_label()));
+            match &stage {
+                Stage::Checking => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("Buscando en GitHub…"));
+                    });
+                }
+                Stage::UpToDate(v) => {
+                    ui.colored_label(GREEN, tf!("✔ Ya tienes la última versión ({v}).", v = v));
+                }
+                Stage::Available(v) => {
+                    ui.label(RichText::new(tf!("Hay una versión nueva: {v}", v = v)).strong());
+                    ui.weak(if crate::update::WINDOWS {
+                        t!("Se descarga el instalador y se ejecuta al cerrar conector.")
+                    } else {
+                        t!("Se descarga el código, se compila (la primera vez tarda unos minutos) y se instala. Puedes seguir usando conector mientras tanto.")
+                    });
+                    if ui.button(t!("⬇ Actualizar ahora")).clicked() {
+                        run = true;
+                    }
+                }
+                Stage::Running => {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(t!("Actualizando… (puedes seguir trabajando)"));
+                    });
+                }
+                Stage::Done(p) => {
+                    ui.colored_label(GREEN, t!("✔ Versión nueva instalada."));
+                    ui.horizontal(|ui| {
+                        if ui.button(t!("⟳ Reiniciar ahora")).clicked() {
+                            restart = Some(p.clone());
+                        }
+                        ui.weak(t!("o úsala la próxima vez que abras conector"));
+                    });
+                }
+                Stage::Failed(e) => {
+                    ui.colored_label(RED, tf!("✖ {e}", e = e));
+                }
+            }
+            let log = u.log.lock().unwrap();
+            if !log.is_empty() {
+                ui.separator();
+                ScrollArea::vertical().max_height(220.0).stick_to_bottom(true).auto_shrink([false, true]).show(ui, |ui| {
+                    for l in log.iter() {
+                        ui.label(RichText::new(l).monospace().small());
+                    }
+                });
+            }
+        });
+        if run {
+            u.run(ctx.clone());
+        }
+        if let Some(p) = restart {
+            match crate::update::relaunch_after_exit(&p) {
+                Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
+                Err(e) => self.status = tf!("No se pudo abrir la versión nueva: {e}", e = e),
+            }
+        }
+        if !open {
+            self.show_updater = false;
+        }
+    }
+
     fn is_open(&self, w: Win) -> bool {
         match w {
             Win::Delete => self.confirm_delete,
@@ -2543,6 +2644,8 @@ impl App {
             Win::Import => self.import_dialog.is_some() && self.import_job.is_none(),
             Win::History => self.console.show_history,
             Win::Settings => self.show_settings,
+            // Mientras instala, la ventana se queda.
+            Win::Updater => self.show_updater && !self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running),
         }
     }
 
@@ -2553,6 +2656,7 @@ impl App {
             Win::Import => self.import_dialog = None,
             Win::History => self.console.show_history = false,
             Win::Settings => self.show_settings = false,
+            Win::Updater => self.show_updater = false,
         }
     }
 
@@ -2563,7 +2667,7 @@ impl App {
             return;
         }
         // Orden de prioridad si no se sabe cuál está delante.
-        let open: Vec<Win> = [Win::Delete, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
+        let open: Vec<Win> = [Win::Delete, Win::Updater, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
         let Some(first) = open.first().copied() else { return };
         let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
         let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
@@ -2581,6 +2685,20 @@ impl App {
             }
             if self.key.is_some() {
                 ui.small("🔓");
+            }
+            if let Some(u) = &self.updater {
+                let label = match u.stage() {
+                    crate::update::Stage::Available(v) => Some(tf!("⬆ Versión nueva ({v})", v = v)),
+                    crate::update::Stage::Running => Some(t!("⬆ Actualizando…").to_owned()),
+                    crate::update::Stage::Done(_) => Some(t!("⬆ Lista: reinicia").to_owned()),
+                    _ => None,
+                };
+                if let Some(l) = label {
+                    ui.separator();
+                    if ui.add(Button::new(RichText::new(l).small().color(GREEN)).small()).clicked() {
+                        self.show_updater = true;
+                    }
+                }
             }
             let tunnels = crate::tunnel::open_count();
             if tunnels > 0 {
@@ -2645,6 +2763,9 @@ impl App {
             if std::env::var_os("CONECTOR_BORRAR").is_some() {
                 self.confirm_delete = true;
             }
+            if std::env::var_os("CONECTOR_ACTUALIZAR").is_some() {
+                self.open_updater(ctx);
+            }
         }
         if let Ok(sch) = std::env::var("CONECTOR_TABLAS") {
             if let Some(x) = self.explorer.schemas.iter_mut().find(|x| x.label().eq_ignore_ascii_case(&sch)).filter(|x| x.tables.is_none() && !x.loading) {
@@ -2680,7 +2801,8 @@ impl App {
                 }
             }
         }
-        let busy = self.export_job.is_some()
+        let busy = self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Checking)
+            || self.export_job.is_some()
             || self.import_job.is_some()
             || matches!(self.test, TestState::Running { .. })
             || self.console.running.is_some()
@@ -2765,6 +2887,7 @@ enum Win {
     Import,
     History,
     Settings,
+    Updater,
 }
 
 fn win_id(w: Win) -> Id {
@@ -2935,6 +3058,9 @@ impl eframe::App for App {
         }
         if self.import_dialog.is_some() {
             self.import_window(&ctx);
+        }
+        if self.show_updater {
+            self.updater_window(&ctx);
         }
     }
 }

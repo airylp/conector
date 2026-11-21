@@ -216,3 +216,32 @@ destino host:puerto (vacío = el de la URL)	destination host:port (empty = the U
 clave privada (vacío = agente o ~/.ssh)	private key (empty = agent or ~/.ssh)	clé privée (vide = agent ou ~/.ssh)
 opciones de ssh, p. ej. -o ProxyJump=otro	ssh options, e.g. -o ProxyJump=other	options ssh, p. ex. -o ProxyJump=autre
 🔐 {n} túneles SSH	🔐 {n} SSH tunnels	🔐 {n} tunnels SSH
+{v} (compilación local)	{v} (local build)	{v} (compilation locale)
+respuesta inesperada de GitHub	unexpected response from GitHub	réponse inattendue de GitHub
+no se pudo consultar GitHub: {e}	could not query GitHub: {e}	impossible d'interroger GitHub : {e}
+no se pudo ejecutar curl: {e}	could not run curl: {e}	impossible d'exécuter curl : {e}
+no hay instalador publicado	no published installer	aucun installateur publié
+no se pudo descargar: {e}	could not download: {e}	téléchargement impossible : {e}
+no se pudo iniciar: {e}	could not start: {e}	impossible de démarrer : {e}
+terminó sin instalar la app	finished without installing the app	terminé sans installer l'app
+falló (mira el registro)	failed (see the log)	échec (voir le journal)
+Versión {v}	Version {v}	Version {v}
+Buscar actualizaciones…	Check for updates…	Rechercher des mises à jour…
+Avisar al arrancar	Notify at startup	Prévenir au démarrage
+Actualizar conector	Update conector	Mettre à jour conector
+Versión instalada: {v}	Installed version: {v}	Version installée : {v}
+Buscando en GitHub…	Checking GitHub…	Recherche sur GitHub…
+✔ Ya tienes la última versión ({v}).	✔ You already have the latest version ({v}).	✔ Vous avez déjà la dernière version ({v}).
+Hay una versión nueva: {v}	A new version is available: {v}	Une nouvelle version est disponible : {v}
+Se descarga el instalador y se ejecuta al cerrar conector.	The installer is downloaded and runs when conector closes.	L'installateur est téléchargé et s'exécute à la fermeture de conector.
+Se descarga el código, se compila (la primera vez tarda unos minutos) y se instala. Puedes seguir usando conector mientras tanto.	The code is downloaded, built (the first time takes a few minutes) and installed. You can keep using conector meanwhile.	Le code est téléchargé, compilé (la première fois prend quelques minutes) et installé. Vous pouvez continuer à utiliser conector pendant ce temps.
+⬇ Actualizar ahora	⬇ Update now	⬇ Mettre à jour
+Actualizando… (puedes seguir trabajando)	Updating… (you can keep working)	Mise à jour… (vous pouvez continuer à travailler)
+✔ Versión nueva instalada.	✔ New version installed.	✔ Nouvelle version installée.
+⟳ Reiniciar ahora	⟳ Restart now	⟳ Redémarrer
+o úsala la próxima vez que abras conector	or use it the next time you open conector	ou utilisez-la à la prochaine ouverture de conector
+✖ {e}	✖ {e}	✖ {e}
+No se pudo abrir la versión nueva: {e}	Could not open the new version: {e}	Impossible d'ouvrir la nouvelle version : {e}
+⬆ Versión nueva ({v})	⬆ New version ({v})	⬆ Nouvelle version ({v})
+⬆ Actualizando…	⬆ Updating…	⬆ Mise à jour…
+⬆ Lista: reinicia	⬆ Ready: restart	⬆ Prête : redémarrez

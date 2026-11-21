@@ -194,7 +194,8 @@ fi
 
 if [ "$OS" = "Darwin" ]; then
     info "$(m 'Compilando y creando conector.app (la primera vez tarda unos minutos)' 'Building conector.app (the first time takes a few minutes)' 'Compilation de conector.app (la première fois prend quelques minutes)')"
-    # Si conector está abierto, pregunta (en la terminal) si cerrarlo y reabrirlo.
+    # Si conector está abierto, pregunta (en la terminal) si cerrarlo y reabrirlo;
+    # desde «Buscar actualizaciones» de la propia app no se cierra (CONECTOR_NO_CERRAR=1).
     sh "$TMP/empaquetar-mac.sh" instalar --si ${CONECTOR_NO_CERRAR:+--no-cerrar} ${CONECTOR_DESTINO:+--destino "$CONECTOR_DESTINO"}
     guardar_idioma
     info "$(m 'Listo. Abre conector desde Launchpad o Spotlight (Cmd+Espacio, «conector»).' 'Done. Open conector from Launchpad or Spotlight (Cmd+Space, “conector”).' 'Terminé. Ouvrez conector depuis Launchpad ou Spotlight (Cmd+Espace, « conector »).')"
@@ -230,7 +231,7 @@ fi
 if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 1048576 ]; then
     rm -rf "$CACHE" && info "$(m 'Caché de compilación vaciada (pasaba de 1 GB)' 'Build cache emptied (it was over 1 GB)' 'Cache de compilation vidé (il dépassait 1 Go)')"
 fi
-echo "   $(m 'Para actualizar más adelante, vuelve a ejecutar este comando.' 'To update later, run this command again.' 'Pour mettre à jour plus tard, relancez cette commande.')"
+echo "   $(m 'Para actualizar más adelante: ⚙ Ajustes → «Buscar actualizaciones…», o vuelve a ejecutar este comando.' 'To update later: ⚙ Settings → “Check for updates…”, or run this command again.' 'Pour mettre à jour plus tard : ⚙ Réglages → « Rechercher des mises à jour… », ou relancez cette commande.')"
 # Java hace falta para los drivers JDBC; si no lo hay, la app ofrece uno portátil.
 if ! command -v java >/dev/null 2>&1 && [ -z "${JAVA_HOME:-}" ]; then
     echo "   $(m 'Java no encontrado: al abrir conector, pulsa «⬇ Descargar Java portátil».' 'Java not found: when you open conector, press “⬇ Download portable Java”.' 'Java introuvable : à l’ouverture de conector, appuyez sur « ⬇ Télécharger Java portable ».')"
