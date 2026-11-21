@@ -207,3 +207,5 @@ en el orden del CSV, separadas por comas	in CSV order, comma-separated	dans l'or
 esquema.tabla (ya existente)	schema.table (existing)	schéma.table (existante)
 ⬆ Importar CSV	⬆ Import CSV	⬆ Importer un CSV
 ⬇ Exportar…	⬇ Export…	⬇ Exporter…
+Variables de este equipo	Variables on this computer	Variables de cet ordinateur
+NOMBRE=valor, una por línea. En el catálogo compartido usa ${VAR}, ${env:VAR} o ${VAR:-x} (x = valor por defecto) en URL, usuario, jar o propiedades: cada equipo pone sus valores.	NAME=value, one per line. In the shared catalog use ${VAR}, ${env:VAR} or ${VAR:-x} (x = default value) in URL, user, jar or properties: each computer sets its own values.	NOM=valeur, une par ligne. Dans le catalogue partagé, utilisez ${VAR}, ${env:VAR} ou ${VAR:-x} (x = valeur par défaut) dans l'URL, l'utilisateur, les jar ou les propriétés : chaque ordinateur met ses valeurs.

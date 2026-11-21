@@ -176,7 +176,7 @@ impl Hub {
         self.catalog().load().into_iter().map(|e| e.conn).find(|c| c.id == id)
     }
 
-    fn fields(&self, c: &Conn) -> Vec<(String, String)> {
+    fn fields(&self, c: &Conn) -> Result<Vec<(String, String)>, String> {
         let pass = Secrets::load().password_for(c, &self.cfg.catalog).unwrap_or_default();
         bridge::conn_fields(c, &pass, &self.cfg.catalog)
     }
@@ -317,7 +317,7 @@ fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
             None => (404, err_json("no existe esa conexión")),
             Some(c) => {
                 let limit = Duration::from_secs(c.timeout as u64 + 30);
-                match hub.ask_one("probar", &hub.fields(&c), limit) {
+                match hub.fields(&c).and_then(|f| hub.ask_one("probar", &f, limit)) {
                     Ok(m) if &*m.kind == "ok" => (200, ok_json(&m)),
                     Ok(m) => (200, fail_json(&m)),
                     Err(e) => (200, err_json(&e)),
@@ -350,7 +350,7 @@ fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
 
 /// Abre una sesión, ejecuta y la cierra; las filas se van escribiendo en el JSON.
 fn query(hub: &Hub, c: &Conn, sql: &str, max: u32) -> String {
-    let open = match hub.ask_one("abrir", &hub.fields(c), Duration::from_secs(c.timeout as u64 + 30)) {
+    let open = match hub.fields(c).and_then(|f| hub.ask_one("abrir", &f, Duration::from_secs(c.timeout as u64 + 30))) {
         Ok(m) if &*m.kind == "ok" => m,
         Ok(m) => return fail_json(&m),
         Err(e) => return err_json(&e),

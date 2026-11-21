@@ -130,6 +130,69 @@ impl Conn {
     }
 }
 
+// ---------- variables por equipo ----------
+
+/// Variables de este equipo (`<config>/variables.txt`, `NOMBRE=valor`).
+pub fn load_vars() -> BTreeMap<String, String> {
+    parse_vars(&vars_text())
+}
+
+pub fn parse_vars(text: &str) -> BTreeMap<String, String> {
+    text.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.split_once('='))
+        .map(|(k, v)| (k.trim().to_owned(), v.trim().to_owned()))
+        .filter(|(k, _)| !k.is_empty())
+        .collect()
+}
+
+pub fn save_vars(text: &str) -> std::io::Result<()> {
+    let dir = config_dir().ok_or_else(|| std::io::Error::other("sin carpeta de configuración"))?;
+    std::fs::create_dir_all(&dir)?;
+    write_atomic(&dir.join("variables.txt"), text.as_bytes(), true)
+}
+
+pub fn vars_text() -> String {
+    config_dir().and_then(|d| std::fs::read_to_string(d.join("variables.txt")).ok()).unwrap_or_default()
+}
+
+/// Sustituye `${NOMBRE}` (variable de este equipo), `${env:NOMBRE}` (entorno)
+/// y `${NOMBRE:-por defecto}`. `$${` deja un `${` literal. Error si falta alguna.
+pub fn expand(s: &str, vars: &BTreeMap<String, String>) -> Result<String, String> {
+    if !s.contains("${") {
+        return Ok(s.to_owned());
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(i) = rest.find("${") {
+        if rest[..i].ends_with('$') {
+            out.push_str(&rest[..i - 1]);
+            out.push_str("${");
+            rest = &rest[i + 2..];
+            continue;
+        }
+        out.push_str(&rest[..i]);
+        let after = &rest[i + 2..];
+        let Some(end) = after.find('}') else { return Err(format!("falta «}}» en: {s}")) };
+        let inner = &after[..end];
+        let (name, default) = match inner.split_once(":-") {
+            Some((n, d)) => (n.trim(), Some(d)),
+            None => (inner.trim(), None),
+        };
+        let value = match name.strip_prefix("env:") {
+            Some(e) => std::env::var(e).ok(),
+            None => vars.get(name).cloned(),
+        };
+        match value.or(default.map(str::to_owned)) {
+            Some(v) => out.push_str(&v),
+            None => return Err(format!("variable sin definir en este equipo: {name}")),
+        }
+        rest = &after[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
 /// `~/…` y rutas relativas al catálogo.
 pub fn resolve(catalog: &Path, p: &str) -> PathBuf {
     if let Some(rest) = p.strip_prefix("~/") {
@@ -574,6 +637,20 @@ mod tests {
         let c = Conn::from_text("h", "url=jdbc:h2:mem:x;INIT=A\\;B\\\\C\\nD\n");
         assert_eq!(c.url, "jdbc:h2:mem:x;INIT=A\\;B\\C\nD");
         assert_eq!(Conn::from_text("h", &c.to_text()).url, c.url);
+    }
+
+    #[test]
+    fn variables() {
+        let v = parse_vars("# comentario\nHOST = db.local\nPUERTO=5433\n");
+        assert_eq!(expand("jdbc:postgresql://${HOST}:${PUERTO}/app", &v).unwrap(), "jdbc:postgresql://db.local:5433/app");
+        assert_eq!(expand("${NADA:-localhost}:${PUERTO:-1}", &v).unwrap(), "localhost:5433");
+        assert_eq!(expand("$${HOST}", &v).unwrap(), "${HOST}");
+        assert!(expand("${NADA}", &v).unwrap_err().contains("NADA"));
+        assert!(expand("${HOST", &v).is_err());
+        // SAFETY: variable propia de este test.
+        unsafe { std::env::set_var("CONECTOR_PRUEBA_VAR", "x1") };
+        assert_eq!(expand("${env:CONECTOR_PRUEBA_VAR}", &v).unwrap(), "x1");
+        assert_eq!(expand("sin variables", &v).unwrap(), "sin variables");
     }
 
     #[test]

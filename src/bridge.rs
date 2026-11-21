@@ -236,9 +236,16 @@ fn hide_console(cmd: &mut Command) {
 #[cfg(not(windows))]
 fn hide_console(_: &mut Command) {}
 
-/// Campos de `probar`/`abrir` para una conexión.
-pub fn conn_fields(c: &crate::store::Conn, password: &str, catalog: &Path) -> Vec<(String, String)> {
-    let mut f = vec![("url".to_owned(), c.url.trim().to_owned()), ("timeout".to_owned(), c.timeout.max(1).to_string())];
+/// Campos de `probar`/`abrir` para una conexión, con las variables de este
+/// equipo ya sustituidas (`store::expand`) en URL, usuario, jar y propiedades.
+pub fn conn_fields(c: &crate::store::Conn, password: &str, catalog: &Path) -> Result<Vec<(String, String)>, String> {
+    let vars = crate::store::load_vars();
+    let x = |s: &str| crate::store::expand(s, &vars);
+    let mut c = c.clone();
+    c.url = x(c.url.trim())?;
+    c.user = x(&c.user)?;
+    c.jars = c.jars.iter().map(|j| x(j)).collect::<Result<_, _>>()?;
+    let mut f = vec![("url".to_owned(), c.url.clone()), ("timeout".to_owned(), c.timeout.max(1).to_string())];
     if !c.user.is_empty() {
         f.push(("usuario".into(), c.user.clone()));
     }
@@ -252,9 +259,9 @@ pub fn conn_fields(c: &crate::store::Conn, password: &str, catalog: &Path) -> Ve
         f.push(("jar".into(), j.display().to_string()));
     }
     for (k, v) in &c.props {
-        f.push((format!("prop.{k}"), v.clone()));
+        f.push((format!("prop.{k}"), x(v)?));
     }
-    f
+    Ok(f)
 }
 
 /// Ejecutable de Java: ajuste → Java portátil descargado → `JAVA_HOME` → PATH.

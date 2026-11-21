@@ -346,6 +346,8 @@ fn guess_table(sql: &str) -> String {
 /// Campos de la frase común en Ajustes.
 #[derive(Default)]
 struct PassEdit {
+    /// Texto de `variables.txt` mientras se edita en Ajustes.
+    vars: String,
     unlock: String,
     new1: String,
     new2: String,
@@ -670,7 +672,7 @@ impl App {
         self.status = t!("Conexión borrada.").into();
     }
 
-    fn request_fields(&self, f: &Form) -> Vec<(String, String)> {
+    fn request_fields(&self, f: &Form) -> Result<Vec<(String, String)>, String> {
         bridge::conn_fields(&f.built(), &f.password, &self.catalog.dir)
     }
 
@@ -683,7 +685,13 @@ impl App {
 
     fn test(&mut self) {
         let Some(f) = &self.form else { return };
-        let fields = self.request_fields(f);
+        let fields = match self.request_fields(f) {
+            Ok(x) => x,
+            Err(e) => {
+                self.test = TestState::Err(ErrInfo::plain(e));
+                return;
+            }
+        };
         // Margen sobre el timeout del driver: la primera vez Java arranca.
         let limit = Duration::from_secs(f.conn.timeout.max(1) as u64 + if self.java.is_some() { 5 } else { 20 });
         let id = self.send("probar", &fields, Pending::Test);
@@ -692,7 +700,15 @@ impl App {
 
     fn connect(&mut self) {
         let Some(f) = &self.form else { return };
-        let fields = self.request_fields(f);
+        let fields = match self.request_fields(f) {
+            Ok(x) => x,
+            Err(e) => {
+                self.console.error = Some(ErrInfo::plain(e));
+                self.console.active = None;
+                self.console.queue.clear();
+                return;
+            }
+        };
         let name = f.conn.name.clone();
         let conn_id = f.conn.id.clone();
         self.disconnect();
@@ -1659,6 +1675,11 @@ impl App {
     }
 
     fn apply_settings(&mut self, ctx: &Context) {
+        if self.pass_edit.vars != store::vars_text() {
+            if let Err(e) = store::save_vars(&self.pass_edit.vars) {
+                self.status = tf!("No se pudieron guardar los ajustes: {e}", e = e);
+            }
+        }
         let s = self.settings_edit.clone();
         let java_changed = s.java != self.settings.java || s.jvm != self.settings.jvm;
         let catalog_changed = s.catalog_dir() != self.catalog.dir;
@@ -1730,6 +1751,7 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
                     self.settings_edit = self.settings.clone();
+                    self.pass_edit.vars = store::vars_text();
                     self.show_settings = !self.show_settings;
                 }
                 if ui.button(t!("⟳ Reiniciar Java")).on_hover_text(t!("Corta conexiones colgadas")).clicked() {
@@ -1872,6 +1894,21 @@ impl App {
             ui.label(t!("URL JDBC"));
             ui.add(TextEdit::singleline(&mut f.conn.url).font(TextStyle::Monospace).hint_text("jdbc:…").desired_width(w));
             ui.end_row();
+            // Con variables: cómo queda en este equipo.
+            if f.conn.url.contains("${") || f.conn.user.contains("${") {
+                let vars = store::load_vars();
+                ui.label("");
+                match (store::expand(&f.conn.url, &vars), store::expand(&f.conn.user, &vars)) {
+                    (Ok(u), Ok(us)) => {
+                        let who = if us.is_empty() { String::new() } else { format!("  ·  {us}") };
+                        ui.weak(RichText::new(format!("→ {u}{who}")).monospace().small());
+                    }
+                    (Err(e), _) | (_, Err(e)) => {
+                        ui.colored_label(ORANGE, RichText::new(e).small());
+                    }
+                }
+                ui.end_row();
+            }
             ui.label(t!("Usuario"));
             ui.add(TextEdit::singleline(&mut f.conn.user).desired_width(w));
             ui.end_row();
@@ -2330,6 +2367,11 @@ impl App {
                     ui.end_row();
                 });
                 ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
+
+                ui.separator();
+                ui.heading(t!("Variables de este equipo"));
+                ui.label(t!("NOMBRE=valor, una por línea. En el catálogo compartido usa ${VAR}, ${env:VAR} o ${VAR:-x} (x = valor por defecto) en URL, usuario, jar o propiedades: cada equipo pone sus valores."));
+                ui.add(TextEdit::multiline(&mut self.pass_edit.vars).font(TextStyle::Monospace).hint_text("DB_HOST=localhost\nDB_PUERTO=5433").desired_rows(3).desired_width(f32::INFINITY));
 
                 ui.separator();
                 ui.heading(t!("Frase común"));

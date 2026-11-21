@@ -260,7 +260,13 @@ fn cli_test(id: &str) -> ExitCode {
     };
     let secrets = store::Secrets::load();
     let pass = std::env::var("CONECTOR_CLAVE").ok().or_else(|| secrets.password_for(&e.conn, &cat.dir)).unwrap_or_default();
-    let fields = bridge::conn_fields(&e.conn, &pass, &cat.dir);
+    let fields = match bridge::conn_fields(&e.conn, &pass, &cat.dir) {
+        Ok(f) => f,
+        Err(err) => {
+            println!("ERROR\t{}\nmensaje\t{err}", e.conn.name);
+            return ExitCode::FAILURE;
+        }
+    };
     let refs: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let mut b = bridge::Bridge::new(bridge::Config { java: s.java.clone(), jvm_opts: s.jvm.clone() }, std::sync::Arc::new(|| {}));
     let req = b.send("probar", &refs);
