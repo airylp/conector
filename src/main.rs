@@ -6,6 +6,7 @@ mod i18n;
 mod app;
 mod bridge;
 mod crypto;
+mod export;
 mod icon;
 mod javadl;
 mod proto;

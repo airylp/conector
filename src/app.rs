@@ -176,6 +176,8 @@ impl Form {
 #[derive(Default)]
 struct ResultTab {
     title: String,
+    /// Sentencia que lo produjo (para volver a ejecutarla al exportar).
+    sql: String,
     cols: Vec<(String, String)>,
     rows: Vec<Box<[Option<Box<str>>]>>,
     widths: Vec<f32>,
@@ -271,6 +273,10 @@ enum Meta {
 }
 
 enum Pending {
+    /// Exportación sin límite en curso.
+    Export,
+    /// Un lote de la importación.
+    Import,
     Test,
     Open,
     Query,
@@ -279,8 +285,62 @@ enum Pending {
 }
 
 enum Picked {
+    ExportPath(std::path::PathBuf),
+    ImportPath(std::path::PathBuf),
     Catalog(std::path::PathBuf),
     Jar(Vec<std::path::PathBuf>),
+}
+
+/// Ventana «Exportar».
+struct ExportDialog {
+    fmt: crate::export::Format,
+    /// Volver a ejecutar sin límite (si no, solo las filas cargadas).
+    all: bool,
+    table: String,
+    path: String,
+    tab: usize,
+}
+
+/// Exportación en curso (filas que llegan de Java directas al archivo).
+struct ExportJob {
+    id: u64,
+    exporter: Option<crate::export::Exporter>,
+    path: std::path::PathBuf,
+    started: Instant,
+}
+
+/// Ventana «Importar CSV».
+#[derive(Default)]
+struct ImportDialog {
+    path: String,
+    table: String,
+    sep: u8,
+    header: bool,
+    empty_null: bool,
+    /// Columnas de destino separadas por comas (por defecto, la cabecera del CSV).
+    cols: String,
+    preview: Vec<Vec<String>>,
+    error: Option<String>,
+}
+
+/// Importación en curso: lotes de `IMPORT_BATCH` filas, uno tras otro.
+struct ImportJob {
+    reader: crate::export::CsvReader<std::fs::File>,
+    table: String,
+    cols: Vec<String>,
+    empty_null: bool,
+    inflight: Option<(u64, usize)>,
+    done_rows: u64,
+    started: Instant,
+    eof: bool,
+}
+
+const IMPORT_BATCH: usize = 500;
+
+/// Tabla de `select … from X` (para el INSERT exportado).
+fn guess_table(sql: &str) -> String {
+    let lower = sql.to_lowercase();
+    lower.find(" from ").and_then(|i| sql[i + 6..].split_whitespace().next()).map(|t| t.trim_end_matches([';', ')', ',']).to_owned()).unwrap_or_else(|| "tabla".into())
 }
 
 /// Campos de la frase común en Ajustes.
@@ -326,6 +386,10 @@ pub struct App {
     /// Certificado del servicio (ruta, huella) si va con TLS.
     server_cert: Option<(String, String)>,
     debug_frames: u32,
+    export_dialog: Option<ExportDialog>,
+    export_job: Option<ExportJob>,
+    import_dialog: Option<ImportDialog>,
+    import_job: Option<ImportJob>,
 }
 
 fn new_bridge(ctx: &Context, s: &Settings) -> Bridge {
@@ -387,6 +451,10 @@ impl App {
             server_err: None,
             server_cert: None,
             debug_frames: 0,
+            export_dialog: None,
+            export_job: None,
+            import_dialog: None,
+            import_job: None,
         };
         app.load_lock();
         app.start_server();
@@ -941,6 +1009,23 @@ impl App {
                     self.console.active = None;
                 }
             },
+            Some(Pending::Export) => {
+                if let Some(j) = self.export_job.take() {
+                    if let Some(x) = j.exporter {
+                        x.abort();
+                    }
+                }
+                self.status = tf!("No se pudo exportar: {e}", e = e.msg);
+            }
+            Some(Pending::Import) => {
+                if let Some(j) = self.import_job.take() {
+                    let at = j.done_rows + 1;
+                    self.status = tf!("Importación detenida en el lote que empieza en la fila {n} (las anteriores quedaron guardadas): {e}", n = at, e = e.msg);
+                    if let Some(d) = &mut self.import_dialog {
+                        d.error = Some(self.status.clone());
+                    }
+                }
+            }
             Some(Pending::Other) => self.status = e.msg,
             None => {}
         }
@@ -993,7 +1078,8 @@ impl App {
                 match &*m.kind {
                     "columnas" => {
                         let title = short_title(&c.current);
-                        c.push_tab(ResultTab { title, cols: split_cols(&m), ..Default::default() });
+                        let sql = c.current.clone();
+                        c.push_tab(ResultTab { title, sql, cols: split_cols(&m), ..Default::default() });
                         c.current_tab = true;
                     }
                     "fila" => {
@@ -1045,10 +1131,380 @@ impl App {
                     _ => {}
                 }
             }
+            Some(Pending::Export) => self.export_msg(m),
+            Some(Pending::Import) => {
+                self.pending.remove(&m.id);
+                if let Some(j) = &mut self.import_job {
+                    if let Some((_, n)) = j.inflight.take() {
+                        j.done_rows += n as u64;
+                    }
+                }
+                self.import_next();
+            }
             Some(Pending::Other) => {
                 self.pending.remove(&m.id);
             }
             None => {}
+        }
+    }
+
+    // ---------- exportar ----------
+
+    fn open_export(&mut self) {
+        let Some(i) = self.console.active else { return };
+        let Some(t) = self.console.tabs.get(i) else { return };
+        let fmt = self.export_dialog.as_ref().map_or(crate::export::Format::Csv, |d| d.fmt);
+        let base = store::slug(&if t.sql.is_empty() { t.title.clone() } else { guess_table(&t.sql) });
+        let dir = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE")).map(std::path::PathBuf::from).unwrap_or_default();
+        self.export_dialog = Some(ExportDialog {
+            fmt,
+            all: !t.sql.is_empty() && self.session_id().is_some(),
+            table: guess_table(&t.sql),
+            path: dir.join(format!("{base}.{}", fmt.ext())).display().to_string(),
+            tab: i,
+        });
+    }
+
+    fn start_export(&mut self) {
+        let Some(d) = self.export_dialog.take() else { return };
+        let path = std::path::PathBuf::from(d.path.trim());
+        let Some(t) = self.console.tabs.get(d.tab) else { return };
+        let mut x = match crate::export::Exporter::create(&path, d.fmt, &d.table) {
+            Ok(x) => x,
+            Err(e) => {
+                self.status = tf!("No se pudo exportar: {e}", e = e);
+                return;
+            }
+        };
+        if !d.all || t.sql.is_empty() {
+            // Solo lo cargado: se escribe ya.
+            let r = x.columns(&t.cols).and_then(|_| t.rows.iter().try_for_each(|r| x.row(r))).and_then(|_| x.finish());
+            self.status = match r {
+                Ok(n) => tf!("Exportadas {n} filas a {ruta}", n = n, ruta = path.display()),
+                Err(e) => tf!("No se pudo exportar: {e}", e = e),
+            };
+            return;
+        }
+        let Some(s) = self.session_id() else {
+            x.abort();
+            return;
+        };
+        let fields = [("sesion".to_owned(), s), ("sql".to_owned(), t.sql.clone()), ("max".to_owned(), "0".to_owned())];
+        let id = self.send("consulta", &fields, Pending::Export);
+        self.export_job = Some(ExportJob { id, exporter: Some(x), path, started: Instant::now() });
+    }
+
+    fn export_msg(&mut self, m: Msg) {
+        let Some(j) = &mut self.export_job else {
+            self.pending.remove(&m.id);
+            return;
+        };
+        let Some(x) = j.exporter.as_mut() else { return };
+        let r = match &*m.kind {
+            "columnas" => x.columns(&split_cols(&m)),
+            "fila" => x.row(&m.fields),
+            "fin" => {
+                self.pending.remove(&m.id);
+                let j = self.export_job.take().unwrap();
+                let n = j.exporter.map(|x| x.finish());
+                self.status = match n {
+                    Some(Ok(n)) if n >= crate::export::XLSX_MAX_ROWS && j.path.extension().is_some_and(|e| e == "xlsx") => {
+                        tf!("Exportadas {n} filas a {ruta} (límite de Excel: el resto no cabe; usa CSV)", n = n, ruta = j.path.display())
+                    }
+                    Some(Ok(n)) => tf!("Exportadas {n} filas a {ruta} en {s} s", n = n, ruta = j.path.display(), s = format!("{:.1}", j.started.elapsed().as_secs_f32())),
+                    Some(Err(e)) => tf!("No se pudo exportar: {e}", e = e),
+                    None => String::new(),
+                };
+                return;
+            }
+            _ => Ok(()),
+        };
+        if let Err(e) = r {
+            // Disco lleno o similar: cancelar la consulta y dejarlo.
+            let id = j.id;
+            if let Some(x) = self.export_job.take().and_then(|j| j.exporter) {
+                x.abort();
+            }
+            self.send("cancelar", &[("objetivo".into(), id.to_string())], Pending::Other);
+            self.status = tf!("No se pudo exportar: {e}", e = e);
+        }
+    }
+
+    fn cancel_export(&mut self) {
+        if let Some(j) = self.export_job.take() {
+            self.pending.remove(&j.id);
+            self.send("cancelar", &[("objetivo".into(), j.id.to_string())], Pending::Other);
+            if let Some(x) = j.exporter {
+                x.abort();
+            }
+            self.status = t!("Exportación cancelada.").into();
+        }
+    }
+
+    // ---------- importar ----------
+
+    fn open_import(&mut self, table: &str) {
+        let d = self.import_dialog.get_or_insert_with(|| ImportDialog { header: true, empty_null: true, sep: b',', ..Default::default() });
+        if !table.is_empty() {
+            d.table = table.to_owned();
+        }
+    }
+
+    /// Lee las primeras filas del CSV elegido para la vista previa.
+    fn import_preview(d: &mut ImportDialog, guess: bool) {
+        d.preview.clear();
+        d.error = None;
+        let file = match std::fs::File::open(d.path.trim()) {
+            Ok(f) => f,
+            Err(e) => {
+                d.error = Some(e.to_string());
+                return;
+            }
+        };
+        if guess {
+            let first = std::io::BufRead::lines(std::io::BufReader::new(&file)).next().and_then(Result::ok).unwrap_or_default();
+            d.sep = crate::export::guess_sep(&first);
+        }
+        let Ok(file) = std::fs::File::open(d.path.trim()) else { return };
+        let mut r = crate::export::CsvReader::new(file, d.sep);
+        while d.preview.len() < 6 {
+            match r.record() {
+                Ok(Some(rec)) => d.preview.push(rec),
+                _ => break,
+            }
+        }
+        if d.header {
+            if let Some(h) = d.preview.first() {
+                d.cols = h.join(", ");
+            }
+        }
+    }
+
+    fn start_import(&mut self) {
+        let Some(d) = &self.import_dialog else { return };
+        if self.session_id().is_none() {
+            self.status = t!("Conecta primero (consola SQL).").into();
+            return;
+        }
+        let cols: Vec<String> = d.cols.split(',').map(|c| c.trim().to_owned()).filter(|c| !c.is_empty()).collect();
+        if d.table.trim().is_empty() || cols.is_empty() {
+            self.status = t!("Indica la tabla y las columnas.").into();
+            return;
+        }
+        let file = match std::fs::File::open(d.path.trim()) {
+            Ok(f) => f,
+            Err(e) => {
+                self.status = e.to_string();
+                return;
+            }
+        };
+        let mut reader = crate::export::CsvReader::new(file, d.sep);
+        if d.header {
+            let _ = reader.record();
+        }
+        self.import_job = Some(ImportJob { reader, table: d.table.trim().to_owned(), cols, empty_null: d.empty_null, inflight: None, done_rows: 0, started: Instant::now(), eof: false });
+        if let Some(d) = &mut self.import_dialog {
+            d.error = None;
+        }
+        self.import_next();
+    }
+
+    /// Envía el siguiente lote o termina.
+    fn import_next(&mut self) {
+        let Some(s) = self.session_id() else {
+            self.import_job = None;
+            return;
+        };
+        let Some(j) = &mut self.import_job else { return };
+        if j.inflight.is_some() {
+            return;
+        }
+        let mut fields: Vec<(String, String)> = vec![("sesion".into(), s), ("tabla".into(), j.table.clone()), ("columnas".into(), j.cols.join("\u{1}"))];
+        let mut n = 0;
+        while n < IMPORT_BATCH && !j.eof {
+            match j.reader.record() {
+                Ok(Some(rec)) => {
+                    if rec.len() == 1 && rec[0].is_empty() {
+                        continue; // línea vacía
+                    }
+                    for i in 0..j.cols.len() {
+                        match rec.get(i) {
+                            Some(v) if !(j.empty_null && v.is_empty()) => fields.push(("v".into(), v.clone())),
+                            _ => fields.push(("z".into(), String::new())),
+                        }
+                    }
+                    n += 1;
+                }
+                Ok(None) => j.eof = true,
+                Err(e) => {
+                    self.status = e.to_string();
+                    self.import_job = None;
+                    return;
+                }
+            }
+        }
+        if n == 0 {
+            let j = self.import_job.take().unwrap();
+            self.status = tf!("Importadas {n} filas en {tabla} en {s} s", n = j.done_rows, tabla = j.table, s = format!("{:.1}", j.started.elapsed().as_secs_f32()));
+            if let Some(d) = &mut self.import_dialog {
+                d.error = None;
+            }
+            self.import_dialog = None;
+            return;
+        }
+        let id = self.send("lote", &fields, Pending::Import);
+        if let Some(j) = &mut self.import_job {
+            j.inflight = Some((id, n));
+        }
+    }
+
+    fn export_window(&mut self, ctx: &Context) {
+        let Some(d) = &mut self.export_dialog else { return };
+        let mut open = true;
+        let mut go = false;
+        let mut pick = false;
+        let has_sql = self.console.tabs.get(d.tab).is_some_and(|t| !t.sql.is_empty());
+        let loaded = self.console.tabs.get(d.tab).map_or(0, |t| t.rows.len());
+        let connected = self.console.session.as_ref().is_some_and(|(s, _)| !s.is_empty());
+        Window::new(t!("Exportar")).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
+            Grid::new("exportar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(t!("Formato"));
+                ui.horizontal(|ui| {
+                    for f in crate::export::Format::ALL {
+                        if ui.radio_value(&mut d.fmt, f, f.label()).changed() {
+                            d.path = std::path::Path::new(&d.path).with_extension(f.ext()).display().to_string();
+                        }
+                    }
+                });
+                ui.end_row();
+                ui.label(t!("Filas"));
+                ui.vertical(|ui| {
+                    ui.radio_value(&mut d.all, false, tf!("Solo las cargadas ({n})", n = loaded));
+                    ui.add_enabled_ui(has_sql && connected, |ui| {
+                        ui.radio_value(&mut d.all, true, t!("Todas: vuelve a ejecutar la consulta sin límite y escribe al vuelo"));
+                    });
+                });
+                ui.end_row();
+                if d.fmt == crate::export::Format::Insert {
+                    ui.label(t!("Tabla"));
+                    ui.add(TextEdit::singleline(&mut d.table).desired_width(260.0));
+                    ui.end_row();
+                }
+                ui.label(t!("Archivo"));
+                ui.horizontal(|ui| {
+                    ui.add(TextEdit::singleline(&mut d.path).desired_width(320.0));
+                    if ui.button(t!("Elegir…")).clicked() {
+                        pick = true;
+                    }
+                });
+                ui.end_row();
+            });
+            if ui.button(t!("Exportar")).clicked() {
+                go = true;
+            }
+        });
+        if pick {
+            let tx = self.dialog.0.clone();
+            let ctx2 = ctx.clone();
+            let p = std::path::PathBuf::from(&d.path);
+            std::thread::spawn(move || {
+                let mut dlg = rfd::FileDialog::new();
+                if let Some(dir) = p.parent() {
+                    dlg = dlg.set_directory(dir);
+                }
+                if let Some(n) = p.file_name() {
+                    dlg = dlg.set_file_name(n.to_string_lossy());
+                }
+                if let Some(f) = dlg.save_file() {
+                    let _ = tx.send(Picked::ExportPath(f));
+                    ctx2.request_repaint();
+                }
+            });
+        }
+        if go {
+            self.start_export();
+        } else if !open {
+            self.export_dialog = None;
+        }
+    }
+
+    fn import_window(&mut self, ctx: &Context) {
+        let Some(d) = &mut self.import_dialog else { return };
+        let mut open = true;
+        let mut go = false;
+        let mut pick = false;
+        let mut reload = false;
+        let mut new_file = false;
+        let busy = self.import_job.is_some();
+        Window::new(t!("Importar CSV")).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
+            Grid::new("importar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                ui.label(t!("Archivo"));
+                ui.horizontal(|ui| {
+                    let r = ui.add(TextEdit::singleline(&mut d.path).desired_width(320.0));
+                    new_file |= r.lost_focus();
+                    if ui.button(t!("Elegir…")).clicked() {
+                        pick = true;
+                    }
+                });
+                ui.end_row();
+                ui.label(t!("Separador"));
+                ui.horizontal(|ui| {
+                    for (c, l) in [(b',', ","), (b';', ";"), (b'\t', "Tab"), (b'|', "|")] {
+                        reload |= ui.radio_value(&mut d.sep, c, l).changed();
+                    }
+                    reload |= ui.checkbox(&mut d.header, t!("Primera fila = nombres de columna")).changed();
+                    ui.checkbox(&mut d.empty_null, t!("Vacío = NULL"));
+                });
+                ui.end_row();
+                ui.label(t!("Tabla"));
+                ui.add(TextEdit::singleline(&mut d.table).hint_text(t!("esquema.tabla (ya existente)")).desired_width(320.0));
+                ui.end_row();
+                ui.label(t!("Columnas"));
+                ui.add(TextEdit::singleline(&mut d.cols).hint_text(t!("en el orden del CSV, separadas por comas")).desired_width(420.0));
+                ui.end_row();
+            });
+            if !d.preview.is_empty() {
+                ui.separator();
+                ui.weak(t!("Vista previa"));
+                ScrollArea::horizontal().id_salt("vista_csv").show(ui, |ui| {
+                    Grid::new("vista_previa").striped(true).show(ui, |ui| {
+                        for (i, rec) in d.preview.iter().enumerate() {
+                            for v in rec {
+                                let t = RichText::new(short_title(v)).monospace();
+                                ui.label(if i == 0 && d.header { t.strong() } else { t });
+                            }
+                            ui.end_row();
+                        }
+                    });
+                });
+            }
+            if let Some(e) = &d.error {
+                ui.colored_label(RED, e);
+            }
+            ui.horizontal(|ui| {
+                if ui.add_enabled(!busy, Button::new(t!("Importar"))).clicked() {
+                    go = true;
+                }
+                ui.weak(t!("Lotes de 500 filas, cada uno en una transacción."));
+            });
+        });
+        if new_file || reload {
+            Self::import_preview(d, new_file);
+        }
+        if pick {
+            let tx = self.dialog.0.clone();
+            let ctx2 = ctx.clone();
+            std::thread::spawn(move || {
+                if let Some(f) = rfd::FileDialog::new().add_filter("CSV", &["csv", "txt", "tsv"]).pick_file() {
+                    let _ = tx.send(Picked::ImportPath(f));
+                    ctx2.request_repaint();
+                }
+            });
+        }
+        if go {
+            self.start_import();
+        } else if !open && !busy {
+            self.import_dialog = None;
         }
     }
 
@@ -1085,7 +1541,7 @@ impl App {
                 let rows: Vec<_> = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
                 let info = tf!("Columnas de {tabla}: {n}", tabla = label, n = rows.len());
                 let cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
-                self.console.push_tab(ResultTab { title: format!("▦ {label}"), cols, rows, widths: Vec::new(), info });
+                self.console.push_tab(ResultTab { title: format!("▦ {label}"), sql: String::new(), cols, rows, widths: Vec::new(), info });
             }
         }
     }
@@ -1102,7 +1558,7 @@ impl App {
                 ctx.request_repaint_after(Duration::from_millis(200));
             }
         }
-        if self.console.running.is_some() || self.console.opening.is_some() {
+        if self.console.running.is_some() || self.console.opening.is_some() || self.export_job.is_some() || self.import_job.is_some() {
             ctx.request_repaint_after(Duration::from_millis(250));
         }
         if self.last_scan.elapsed() >= SCAN_EVERY {
@@ -1114,6 +1570,17 @@ impl App {
         ctx.request_repaint_after(SCAN_EVERY);
         while let Ok(p) = self.dialog.1.try_recv() {
             match p {
+                Picked::ExportPath(f) => {
+                    if let Some(d) = &mut self.export_dialog {
+                        d.path = f.display().to_string();
+                    }
+                }
+                Picked::ImportPath(f) => {
+                    if let Some(d) = &mut self.import_dialog {
+                        d.path = f.display().to_string();
+                        Self::import_preview(d, true);
+                    }
+                }
                 Picked::Catalog(dir) => self.settings_edit.catalog = dir.display().to_string(),
                 Picked::Jar(files) => {
                     if let Some(f) = &mut self.form {
@@ -1522,6 +1989,7 @@ impl App {
     fn explorer_ui(&mut self, ui: &mut Ui) {
         let mut want: Option<Meta> = None;
         let mut insert: Option<String> = None;
+        let mut import_into: Option<String> = None;
         ui.horizontal(|ui| {
             ui.strong(t!("Explorador"));
             if self.session_id().is_some() && ui.small_button("⟳").on_hover_text(t!("Recargar")).clicked() {
@@ -1574,6 +2042,10 @@ impl App {
                                     insert = Some(format!("select * from {full}"));
                                     ui.close();
                                 }
+                                if ui.button(t!("Importar CSV…")).clicked() {
+                                    import_into = Some(full.clone());
+                                    ui.close();
+                                }
                                 if ui.button(t!("Copiar nombre")).clicked() {
                                     ui.ctx().copy_text(full.clone());
                                     ui.close();
@@ -1597,6 +2069,9 @@ impl App {
             self.console.sql = sql;
             self.console.selection = None;
             self.run_sql(true);
+        }
+        if let Some(t) = import_into {
+            self.open_import(&t);
         }
         if let Some(m) = want {
             self.meta(m);
@@ -1641,6 +2116,9 @@ impl App {
                     if ui.add_enabled(can, Button::new(t!("▶ Ejecutar"))).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
                         run = Some(false);
                     }
+                }
+                if ui.button(t!("⬆ Importar CSV")).clicked() {
+                    self.open_import("");
                 }
                 if ui.selectable_label(self.console.show_history, t!("🕘 Historial")).clicked() {
                     self.console.show_history = !self.console.show_history;
@@ -1734,10 +2212,14 @@ impl App {
             Some(_) => {
                 let running = self.console.running.is_some() && self.console.current_tab && self.console.active == Some(self.console.tabs.len() - 1);
                 let mut copy = false;
+                let mut want_export = false;
                 if let Some(t) = self.console.tab() {
                     ui.horizontal(|ui| {
                         ui.weak(&t.info);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button(t!("⬇ Exportar…")).clicked() {
+                                want_export = true;
+                            }
                             if !t.rows.is_empty() && ui.small_button(t!("Copiar como TSV")).clicked() {
                                 copy = true;
                             }
@@ -1752,6 +2234,9 @@ impl App {
                 }
                 if copy {
                     self.status = t!("Resultado copiado.").into();
+                }
+                if want_export {
+                    self.open_export();
                 }
             }
         }
@@ -1993,6 +2478,7 @@ impl App {
     }
 
     fn status_bar(&mut self, ui: &mut Ui) {
+        let mut cancel_export = false;
         ui.horizontal(|ui| {
             let r = ui.add(Label::new(RichText::new(format!("📁 {}", self.catalog.dir.display())).small()).sense(Sense::click()));
             if r.on_hover_text(t!("Catálogo (clic: copiar la ruta)")).clicked() {
@@ -2013,9 +2499,26 @@ impl App {
                 }
                 _ => {}
             }
+            if let Some(j) = &self.export_job {
+                ui.separator();
+                ui.spinner();
+                let n = j.exporter.as_ref().map_or(0, |x| x.rows());
+                ui.small(tf!("Exportando… {n} filas · {s} s", n = n, s = format!("{:.0}", j.started.elapsed().as_secs_f32())));
+                if ui.small_button("■").on_hover_text(t!("Cancelar")).clicked() {
+                    cancel_export = true;
+                }
+            }
+            if let Some(j) = &self.import_job {
+                ui.separator();
+                ui.spinner();
+                ui.small(tf!("Importando… {n} filas · {s} s", n = j.done_rows, s = format!("{:.0}", j.started.elapsed().as_secs_f32())));
+            }
             ui.separator();
             ui.small(&self.status);
         });
+        if cancel_export {
+            self.cancel_export();
+        }
     }
 
     /// Pruebas: CONECTOR_CAPTURA=ruta.rgba guarda una captura (ancho, alto u32 LE +
@@ -2045,16 +2548,48 @@ impl App {
                 self.explorer.filter = std::env::var("CONECTOR_FILTRO_TABLA").unwrap_or_default();
             }
         }
-        let busy = matches!(self.test, TestState::Running { .. })
+        // CONECTOR_EXPORTAR=ruta.ext exporta TODO el resultado visible al terminar el SQL;
+        // CONECTOR_IMPORTAR=ruta.csv|tabla importa ese CSV.
+        if self.debug_frames > 3 && self.console.running.is_none() && self.console.queue.is_empty() && self.console.opening.is_none() && !self.console.queued {
+            if let Some(p) = std::env::var_os("CONECTOR_EXPORTAR").filter(|_| self.export_job.is_none() && self.debug_frames < 10_000 && !self.console.tabs.is_empty()) {
+                self.open_export();
+                if let Some(d) = &mut self.export_dialog {
+                    let p = std::path::PathBuf::from(p);
+                    d.fmt = crate::export::Format::ALL.into_iter().find(|f| p.extension().is_some_and(|e| e == f.ext())).unwrap_or(crate::export::Format::Csv);
+                    d.path = p.display().to_string();
+                    d.all = true;
+                }
+                self.start_export();
+                self.debug_frames = 10_000;
+            }
+            if let Some((p, t)) = std::env::var("CONECTOR_IMPORTAR").ok().and_then(|v| v.split_once('|').map(|(a, b)| (a.to_owned(), b.to_owned()))) {
+                if self.import_job.is_none() && self.debug_frames < 20_000 && self.session_id().is_some() {
+                    self.open_import(&t);
+                    if let Some(d) = &mut self.import_dialog {
+                        d.path = p;
+                        Self::import_preview(d, true);
+                    }
+                    self.start_import();
+                    self.debug_frames = 20_000;
+                }
+            }
+        }
+        let busy = self.export_job.is_some()
+            || self.import_job.is_some()
+            || matches!(self.test, TestState::Running { .. })
             || self.console.running.is_some()
             || self.console.opening.is_some()
             || self.console.queued
             || self.pending.values().any(|p| matches!(p, Pending::Meta(_)));
-        if self.debug_frames < 30 || (busy && self.debug_frames < 900) {
+        if self.debug_frames < 30 || (busy && (self.debug_frames < 900 || (self.debug_frames >= 10_000 && self.debug_frames < 30_000))) {
             ctx.request_repaint();
             return;
         }
         if self.debug_frames == u32::MAX / 2 {
+            return;
+        }
+        if (std::env::var_os("CONECTOR_EXPORTAR").is_some() && self.debug_frames < 10_000) || (std::env::var_os("CONECTOR_IMPORTAR").is_some() && self.debug_frames < 20_000 && self.debug_frames > 900) {
+            ctx.request_repaint();
             return;
         }
         self.debug_frames = u32::MAX / 2;
@@ -2255,6 +2790,12 @@ impl eframe::App for App {
         }
         if self.console.show_history {
             self.history_window(&ctx);
+        }
+        if self.export_dialog.is_some() {
+            self.export_window(&ctx);
+        }
+        if self.import_dialog.is_some() {
+            self.import_window(&ctx);
         }
     }
 }

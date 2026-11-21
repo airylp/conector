@@ -106,6 +106,7 @@ public final class ConectorHelper {
             else if (cmd.equals("abrir")) open(id, a, jars, props);
             else if (cmd.equals("consulta")) query(id, a);
             else if (cmd.equals("meta")) meta(id, a);
+            else if (cmd.equals("lote")) batch(id, a, f);
             else if (cmd.equals("cancelar")) cancel(id, a);
             else if (cmd.equals("cerrar")) close(id, a);
             else send("error", id, "mensaje=orden desconocida: " + cmd);
@@ -223,11 +224,17 @@ public final class ConectorHelper {
         String sql = a.containsKey("sql") ? a.get("sql") : "";
         int max = a.containsKey("max") ? Integer.parseInt(a.get("max")) : 1000;
         long t0 = System.nanoTime();
+        // Sin límite (exportar): por cursor, sin cargar todo en memoria. Algunos
+        // drivers (PostgreSQL) solo respetan fetchSize fuera de autocommit.
+        boolean stream = max <= 0 && c.getAutoCommit();
+        if (stream) {
+            try { c.setAutoCommit(false); } catch (Throwable e) { stream = false; }
+        }
         Statement st = c.createStatement();
         RUNNING.put(id, st);
         try {
             if (max > 0) st.setMaxRows(max + 1);
-            st.setFetchSize(Math.min(Math.max(max, 1), 500));
+            st.setFetchSize(max > 0 ? Math.min(max, 500) : 500);
             boolean rs = st.execute(sql);
             long rows = 0;
             boolean more = false;
@@ -250,6 +257,10 @@ public final class ConectorHelper {
         } finally {
             RUNNING.remove(id);
             try { st.close(); } catch (Throwable ignored) { }
+            if (stream) {
+                try { c.rollback(); } catch (Throwable ignored) { }
+                try { c.setAutoCommit(true); } catch (Throwable ignored) { }
+            }
         }
     }
 
@@ -320,6 +331,120 @@ public final class ConectorHelper {
         }
         long ms = (System.nanoTime() - t0) / 1000000;
         send("fin", id, "filas=" + res[0], "mas=" + (res[1] != 0), "actualizadas=", "ms=" + ms);
+    }
+
+    /**
+     * Importar: inserta filas en `tabla` (columnas separadas por \u0001 en
+     * `columnas`). Valores en orden fila a fila: `v=texto` o `z=` (NULL).
+     * Convierte cada valor al tipo de la columna (getColumns) y todo el lote va
+     * en una transacción: si algo falla no queda nada a medias.
+     */
+    static void batch(String id, Map<String, String> a, List<String> f) throws Exception {
+        Connection c = session(a);
+        String table = a.get("tabla");
+        String[] cols = a.get("columnas").split("\u0001", -1);
+        List<String> vals = new ArrayList<String>();
+        for (int i = 2; i < f.size(); i++) {
+            String kv = f.get(i);
+            if (kv == null) continue;
+            if (kv.startsWith("v=")) vals.add(kv.substring(2));
+            else if (kv.startsWith("z=")) vals.add(null);
+        }
+        int n = cols.length;
+        if (n == 0 || vals.size() % n != 0) throw new IllegalArgumentException("número de valores incorrecto");
+        int[] types = columnTypes(c, table, cols);
+        StringBuilder sql = new StringBuilder("insert into ").append(table).append(" (");
+        for (int i = 0; i < n; i++) sql.append(i > 0 ? ", " : "").append(cols[i]);
+        sql.append(") values (");
+        for (int i = 0; i < n; i++) sql.append(i > 0 ? ", ?" : "?");
+        sql.append(')');
+        long t0 = System.nanoTime();
+        boolean auto = c.getAutoCommit();
+        int rows = vals.size() / n;
+        int row = 0;
+        PreparedStatement ps = c.prepareStatement(sql.toString());
+        RUNNING.put(id, ps);
+        try {
+            c.setAutoCommit(false);
+            for (row = 0; row < rows; row++) {
+                for (int i = 0; i < n; i++) bind(ps, i + 1, types[i], vals.get(row * n + i));
+                ps.addBatch();
+            }
+            ps.executeBatch();
+            c.commit();
+        } catch (Exception e) {
+            try { c.rollback(); } catch (Throwable ignored) { }
+            if (e instanceof BatchUpdateException && e.getCause() == null && ((SQLException) e).getNextException() != null) {
+                throw ((SQLException) e).getNextException();
+            }
+            if (row < rows) throw new SQLException("fila " + (row + 1) + " del lote: " + describe(e), e);
+            throw e;
+        } finally {
+            RUNNING.remove(id);
+            try { ps.close(); } catch (Throwable ignored) { }
+            try { c.setAutoCommit(auto); } catch (Throwable ignored) { }
+        }
+        send("ok", id, "filas=" + rows, "ms=" + (System.nanoTime() - t0) / 1000000);
+    }
+
+    /** Tipos JDBC de las columnas (Types.OTHER si no se sabe). */
+    static int[] columnTypes(Connection c, String table, String[] cols) {
+        int[] t = new int[cols.length];
+        Arrays.fill(t, Types.OTHER);
+        String sch = null, name = table;
+        int dot = table.lastIndexOf('.');
+        if (dot >= 0) { sch = table.substring(0, dot); name = table.substring(dot + 1); }
+        Map<String, Integer> found = new HashMap<String, Integer>();
+        try {
+            DatabaseMetaData m = c.getMetaData();
+            // Probar el nombre tal cual, en mayúsculas y en minúsculas (cada base guarda distinto).
+            String[][] tries = { { sch, name }, { up(sch), up(name) }, { low(sch), low(name) } };
+            for (String[] tr : tries) {
+                ResultSet r = m.getColumns(null, tr[0], tr[1], null);
+                try {
+                    while (r.next()) found.put(r.getString("COLUMN_NAME").toLowerCase(Locale.ROOT), r.getInt("DATA_TYPE"));
+                } finally {
+                    r.close();
+                }
+                if (!found.isEmpty()) break;
+            }
+        } catch (Throwable ignored) { }
+        for (int i = 0; i < cols.length; i++) {
+            Integer ty = found.get(cols[i].trim().replace("\"", "").toLowerCase(Locale.ROOT));
+            if (ty != null) t[i] = ty;
+        }
+        return t;
+    }
+
+    static String up(String s) { return s == null ? null : s.toUpperCase(Locale.ROOT); }
+    static String low(String s) { return s == null ? null : s.toLowerCase(Locale.ROOT); }
+
+    static void bind(PreparedStatement ps, int i, int type, String v) throws SQLException {
+        if (v == null) {
+            ps.setNull(i, type == Types.OTHER ? Types.VARCHAR : type);
+            return;
+        }
+        String s = v.trim();
+        switch (type) {
+            case Types.TINYINT: case Types.SMALLINT: case Types.INTEGER: case Types.BIGINT:
+                ps.setLong(i, Long.parseLong(s)); break;
+            case Types.DECIMAL: case Types.NUMERIC:
+                ps.setBigDecimal(i, new java.math.BigDecimal(s.replace(',', '.'))); break;
+            case Types.FLOAT: case Types.REAL: case Types.DOUBLE:
+                ps.setDouble(i, Double.parseDouble(s.replace(',', '.'))); break;
+            case Types.BOOLEAN: case Types.BIT:
+                ps.setBoolean(i, s.equalsIgnoreCase("true") || s.equals("1") || s.equalsIgnoreCase("si") || s.equalsIgnoreCase("sí") || s.equalsIgnoreCase("yes")); break;
+            case Types.DATE:
+                ps.setDate(i, java.sql.Date.valueOf(s.length() > 10 ? s.substring(0, 10) : s)); break;
+            case Types.TIMESTAMP: case Types.TIMESTAMP_WITH_TIMEZONE:
+                ps.setTimestamp(i, Timestamp.valueOf(s.length() == 10 ? s + " 00:00:00" : s.replace('T', ' '))); break;
+            case Types.TIME:
+                ps.setTime(i, Time.valueOf(s)); break;
+            case Types.OTHER:
+                ps.setObject(i, v); break;
+            default:
+                ps.setString(i, v);
+        }
     }
 
     static String emptyToNull(String s) {

@@ -176,3 +176,34 @@ hace {n} h	{n} h ago	il y a {n} h
 hace {n} min	{n} min ago	il y a {n} min
 ⏩ Script	⏩ Script	⏩ Script
 🕘 Historial	🕘 History	🕘 Historique
+Archivo	File	Fichier
+Columnas	Columns	Colonnes
+Conecta primero (consola SQL).	Connect first (SQL console).	Connectez-vous d'abord (console SQL).
+Exportación cancelada.	Export cancelled.	Export annulé.
+Exportadas {n} filas a {ruta}	Exported {n} rows to {ruta}	{n} lignes exportées vers {ruta}
+Exportadas {n} filas a {ruta} (límite de Excel: el resto no cabe; usa CSV)	Exported {n} rows to {ruta} (Excel limit: the rest doesn't fit; use CSV)	{n} lignes exportées vers {ruta} (limite d'Excel : le reste ne tient pas ; utilisez CSV)
+Exportadas {n} filas a {ruta} en {s} s	Exported {n} rows to {ruta} in {s} s	{n} lignes exportées vers {ruta} en {s} s
+Exportando… {n} filas · {s} s	Exporting… {n} rows · {s} s	Export… {n} lignes · {s} s
+Exportar	Export	Exporter
+Filas	Rows	Lignes
+Formato	Format	Format
+Importación detenida en el lote que empieza en la fila {n} (las anteriores quedaron guardadas): {e}	Import stopped at the batch starting at row {n} (earlier rows were saved): {e}	Import arrêté au lot commençant à la ligne {n} (les précédentes ont été enregistrées) : {e}
+Importadas {n} filas en {tabla} en {s} s	Imported {n} rows into {tabla} in {s} s	{n} lignes importées dans {tabla} en {s} s
+Importando… {n} filas · {s} s	Importing… {n} rows · {s} s	Import… {n} lignes · {s} s
+Importar	Import	Importer
+Importar CSV	Import CSV	Importer un CSV
+Importar CSV…	Import CSV…	Importer un CSV…
+Indica la tabla y las columnas.	Enter the table and the columns.	Indiquez la table et les colonnes.
+Lotes de 500 filas, cada uno en una transacción.	Batches of 500 rows, each in one transaction.	Lots de 500 lignes, chacun dans une transaction.
+No se pudo exportar: {e}	Could not export: {e}	Impossible d'exporter : {e}
+Primera fila = nombres de columna	First row = column names	Première ligne = noms des colonnes
+Separador	Separator	Séparateur
+Solo las cargadas ({n})	Only the loaded ones ({n})	Seulement celles chargées ({n})
+Tabla	Table	Table
+Todas: vuelve a ejecutar la consulta sin límite y escribe al vuelo	All: re-runs the query without a limit and writes on the fly	Toutes : relance la requête sans limite et écrit au fil de l'eau
+Vacío = NULL	Empty = NULL	Vide = NULL
+Vista previa	Preview	Aperçu
+en el orden del CSV, separadas por comas	in CSV order, comma-separated	dans l'ordre du CSV, séparées par des virgules
+esquema.tabla (ya existente)	schema.table (existing)	schéma.table (existante)
+⬆ Importar CSV	⬆ Import CSV	⬆ Importer un CSV
+⬇ Exportar…	⬇ Export…	⬇ Exporter…
