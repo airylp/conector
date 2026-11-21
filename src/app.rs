@@ -1737,6 +1737,7 @@ impl App {
 
     fn toolbar(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        let mut update_clicked = false;
         ui.horizontal(|ui| {
             if ui.button(t!("＋ Nueva")).clicked() {
                 self.new_connection();
@@ -1758,6 +1759,18 @@ impl App {
                 self.test();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if crate::update::SUPPORTED {
+                    let new = self.updater.as_ref().map(|u| u.stage()).filter(|st| matches!(st, crate::update::Stage::Available(_) | crate::update::Stage::Done(_)));
+                    let b = if new.is_some() { Button::new(RichText::new("⟳ ⬆").color(GREEN)) } else { Button::new("⟳") };
+                    let hint = match new {
+                        Some(crate::update::Stage::Available(v)) => tf!("Hay una versión nueva: {v}", v = v),
+                        Some(crate::update::Stage::Done(_)) => t!("✔ Versión nueva instalada.").to_owned(),
+                        _ => t!("Buscar actualizaciones…").to_owned(),
+                    };
+                    if ui.add(b).on_hover_text(hint).clicked() {
+                        update_clicked = true;
+                    }
+                }
                 if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
                     self.settings_edit = self.settings.clone();
                     self.pass_edit.vars = store::vars_text();
@@ -1797,6 +1810,14 @@ impl App {
                 }
             });
         });
+        if update_clicked {
+            // Si ya se sabe que hay versión nueva, abrir sin volver a comprobar.
+            if self.updater.as_ref().is_some_and(|u| matches!(u.stage(), crate::update::Stage::Available(_) | crate::update::Stage::Done(_) | crate::update::Stage::Running)) {
+                self.show_updater = true;
+            } else {
+                self.open_updater(&ctx);
+            }
+        }
     }
 
     fn sidebar(&mut self, ui: &mut Ui) {
@@ -2395,7 +2416,7 @@ impl App {
                 ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
                 ui.horizontal(|ui| {
                     ui.label(tf!("Versión {v}", v = crate::update::version_label()));
-                    if crate::update::SUPPORTED && ui.button(t!("Buscar actualizaciones…")).clicked() {
+                    if crate::update::SUPPORTED && ui.button(t!("⟳ Buscar actualizaciones…")).clicked() {
                         open_updater = true;
                     }
                     ui.checkbox(&mut s.check_updates, t!("Avisar al arrancar"));
