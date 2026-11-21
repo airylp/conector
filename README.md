@@ -1,20 +1,34 @@
 # conector
 
-Interfaz ligera en Rust (egui/eframe) para probar conexiones JDBC, guardarlas
-y compartirlas entre equipos. Los drivers JDBC son los jar de siempre: un
-pequeño proceso Java auxiliar habla JDBC y la interfaz habla con él por
-stdin/stdout.
+Interfaz ligera en Rust (egui/eframe) para probar conexiones JDBC, explorarlas,
+guardarlas y compartirlas entre equipos y programas. Los drivers son los jar de
+siempre: un pequeño proceso Java auxiliar (incrustado en el binario, 41 KB)
+habla JDBC y la interfaz habla con él por stdin/stdout.
+
+## Instalar
+
+    curl -fsSL https://raw.githubusercontent.com/airylp/conector/main/install.sh | sh
+
+(macOS crea `conector.app`; Linux, `~/.local/bin/conector` con entrada en el menú;
+Windows: instalador de `.github/workflows/windows.yml` o `install.ps1`.)
+
+Necesita Java 8+ para los drivers. Si no hay, la app ofrece **⬇ Descargar Java
+portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
 
 ## Uso
 
-    cargo build --release
-    ./target/release/conector                     # interfaz
-    ./target/release/conector --listar            # id, nombre, URL
-    ./target/release/conector --probar ID         # 0 si conecta (para scripts)
+    conector                       interfaz
+    conector --listar              id, nombre, URL
+    conector --probar ID           0 si conecta (para scripts)
+    conector --frase               crea o desbloquea la frase común en este equipo
+    conector --clave ID            guarda la contraseña de ID cifrada en el catálogo
+    conector --servir [DIR:PUERTO] servicio HTTP+JSON para otros programas
 
-Requisitos: Java 8+ para ejecutar los drivers. Con JDK, el auxiliar se compila
-una vez (`javac --release 8`); con solo JRE hace falta Java 11+ JDK o un
-`.class` ya compilado en la carpeta del auxiliar.
+En la interfaz: lista agrupada con filtro, plantillas (PostgreSQL, MySQL,
+MariaDB, Oracle, SQL Server, DB2, Firebird, H2, SQLite), descarga del driver
+desde Maven Central, prueba con metadatos y errores con SQLState y causas,
+consola SQL (Ctrl+Enter, cancelar) y explorador de esquemas → tablas →
+columnas. Español, inglés y francés.
 
 ## Catálogo compartible
 
@@ -27,14 +41,47 @@ Cada conexión es un archivo de texto `<catálogo>/<id>.conexion`:
     driver=oracle.jdbc.OracleDriver
     jar=drivers/ojdbc11.jar
     timeout=15
+    clave_cifrada=x1:…
     prop.oracle.net.CONNECT_TIMEOUT=5000
 
-- Pon el catálogo en una carpeta compartida (unidad de red, repositorio git,
-  Syncthing…) desde Ajustes o con `CONECTOR_CATALOGO`: los demás equipos ven
-  los cambios en unos 2 segundos.
-- Los jar relativos se resuelven desde el catálogo; sin `jar=` se cargan todos
-  los de `<catálogo>/drivers`. Así el catálogo lleva también los drivers.
-- Las contraseñas **no** van al catálogo: «Recordar en este equipo» las guarda
-  en `secretos.txt` de la configuración local (permisos 600).
-- Escritura atómica (temporal + rename) y aviso si otro equipo cambió la
-  conexión mientras la editabas.
+- Pon el catálogo en una carpeta compartida (unidad de red, git, Syncthing…)
+  desde Ajustes o con `CONECTOR_CATALOGO`: los demás equipos ven los cambios en
+  unos 2 s. Escritura atómica y aviso si otro equipo cambió lo que editas.
+- Jar relativos al catálogo; sin `jar=` se cargan todos los de
+  `<catálogo>/drivers` (el catálogo lleva sus drivers).
+
+### Contraseñas
+
+Por conexión: **no guardar**, **solo en este equipo** (`secretos.txt` local,
+permisos 600) o **compartida cifrada** en el catálogo con la *frase común* del
+equipo: Argon2id (19 MiB, t=2) → clave de 256 bits, XChaCha20-Poly1305 con nonce
+aleatorio. `<catálogo>/cifrado.txt` guarda sal, parámetros y un verificador,
+nunca la clave. Cada equipo introduce la frase una vez (Ajustes o
+`conector --frase`) y recuerda la clave derivada localmente. Cambiar la frase
+vuelve a cifrar todas.
+
+## Servicio de red
+
+Ajustes → Servicio de red, o `conector --servir`. HTTP + JSON con token
+(`Authorization: Bearer …`):
+
+| Método | Ruta | |
+|---|---|---|
+| GET | `/v1/estado` | versión, nº de conexiones, firma del catálogo |
+| GET | `/v1/conexiones` | lista (sin contraseñas) |
+| GET | `/v1/conexiones/{id}[?clave=1]` | una; `clave=1` solo si `servir_claves=si` |
+| POST | `/v1/conexiones/{id}/probar` | prueba la conexión |
+| POST | `/v1/conexiones/{id}/consulta[?max=N]` | cuerpo = SQL → columnas y filas |
+| GET | `/v1/cambios?firma=F` | espera (≤25 s) a que cambie el catálogo |
+
+    curl -H "Authorization: Bearer $TOKEN" http://equipo:7470/v1/conexiones
+    curl -XPOST -H "Authorization: Bearer $TOKEN" --data 'select * from clientes' \
+         'http://equipo:7470/v1/conexiones/h2/consulta?max=100'
+
+Sin TLS: úsalo en una red de confianza, VPN o túnel SSH.
+
+## Desarrollo
+
+    cargo test --release                       # 17 tests
+    cargo test --release descargas -- --ignored  # descargas reales (red)
+    scripts/compilar-auxiliar.sh               # tras cambiar ConectorHelper.java

@@ -182,6 +182,39 @@ pub fn download_driver(state: &Shared, wake: Arc<dyn Fn() + Send + Sync>, templa
 mod tests {
     use super::*;
 
+    fn wait(st: &Shared) -> State {
+        loop {
+            let s = st.lock().unwrap().clone();
+            if !matches!(s, State::Running(_)) {
+                return s;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(200));
+        }
+    }
+
+    /// Descargas reales (red): `cargo test --release descargas -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn descargas_reales() {
+        let dir = crate::store::temp_dir("descargas");
+        // SAFETY: test que se ejecuta solo (ignored).
+        unsafe { std::env::set_var("CONECTOR_CONFIG", dir.join("config")) };
+        let st: Shared = Arc::new(Mutex::new(State::Running(String::new())));
+        download_driver(&st, Arc::new(|| {}), "PostgreSQL".into(), dir.join("cat"));
+        let r = wait(&st);
+        println!("driver: {r:?}");
+        assert!(matches!(&r, State::Done(p) if p.starts_with("drivers/postgresql-") && dir.join("cat").join(p).is_file()));
+        download_java(&st, Arc::new(|| {}));
+        let r = wait(&st);
+        println!("java: {r:?}");
+        let State::Done(java) = r else { panic!("{r:?}") };
+        let out = Command::new(&java).arg("-version").output().unwrap();
+        println!("{}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success());
+        assert_eq!(installed().as_deref(), Some(Path::new(&java)));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
     #[test]
     fn versions() {
         let m = "<metadata><versioning><versions><version>42.7.4</version><version>42.10.0</version>\
