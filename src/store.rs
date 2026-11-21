@@ -3,8 +3,9 @@
 //! poner en una carpeta compartida, un repositorio git o una unidad de red y
 //! la usan a la vez varios equipos y programas (formato de texto simple).
 //!
-//! Las contraseñas NUNCA van al catálogo: quedan en `secretos.txt`, en la
-//! carpeta de configuración local (permisos 600).
+//! Contraseñas: o solo en este equipo (`secretos.txt` en la configuración
+//! local, permisos 600) o compartidas en el catálogo CIFRADAS con la frase
+//! común (`clave_cifrada=`, ver `crypto`). Nunca en claro en el catálogo.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -30,6 +31,8 @@ pub struct Conn {
     /// Segundos de espera al conectar.
     pub timeout: u32,
     pub notes: String,
+    /// Contraseña compartida cifrada con la frase común (`x1:…`), o vacía.
+    pub secret: String,
 }
 
 impl Conn {
@@ -38,7 +41,7 @@ impl Conn {
     }
 
     pub fn to_text(&self) -> String {
-        let mut s = String::from("# conector: conexión JDBC (sin contraseña)\n");
+        let mut s = String::from("# conector: conexión JDBC (la contraseña, si va, está cifrada)\n");
         let mut kv = |k: &str, v: &str| {
             if !v.is_empty() {
                 s.push_str(k);
@@ -57,6 +60,7 @@ impl Conn {
         }
         kv("timeout", &self.timeout.to_string());
         kv("notas", &self.notes);
+        kv("clave_cifrada", &self.secret);
         for (k, v) in &self.props {
             s.push_str("prop.");
             s.push_str(&esc(k).replace('=', "\\="));
@@ -85,6 +89,7 @@ impl Conn {
                 "jar" => c.jars.push(v),
                 "timeout" => c.timeout = v.trim().parse().unwrap_or(15),
                 "notas" => c.notes = v,
+                "clave_cifrada" => c.secret = v,
                 k => {
                     if let Some(p) = k.strip_prefix("prop.") {
                         c.props.push((unesc(p), v));
@@ -172,7 +177,12 @@ fn unesc(s: &str) -> String {
                 Some('n') => o.push('\n'),
                 Some('r') => o.push('\r'),
                 Some('t') => o.push('\t'),
-                Some(c) => o.push(c),
+                Some(c @ ('\\' | '=')) => o.push(c),
+                // Escape desconocido (p. ej. `\;` de H2 escrito a mano): se deja tal cual.
+                Some(c) => {
+                    o.push('\\');
+                    o.push(c);
+                }
                 None => o.push('\\'),
             }
         } else {
@@ -363,11 +373,30 @@ pub struct Settings {
     /// Opciones de la JVM; vacío = `-Xmx384m`.
     pub jvm: String,
     pub dark: Option<bool>,
+    /// Servicio de red para otros programas (ver `server`).
+    pub serve: bool,
+    /// Dirección:puerto donde escucha.
+    pub serve_addr: String,
+    /// Token que deben mandar los clientes (`Authorization: Bearer …`).
+    pub serve_token: String,
+    /// Entregar contraseñas por la red (`?clave=1`). Desactivado por defecto.
+    pub serve_passwords: bool,
+    /// Idioma de la interfaz («es», «en», «fr»); `None` = el del sistema.
+    pub lang: Option<String>,
+}
+
+pub const DEFAULT_SERVE_ADDR: &str = "0.0.0.0:7470";
+
+/// Token aleatorio de 32 caracteres hexadecimales.
+pub fn new_token() -> String {
+    let mut b = [0u8; 16];
+    getrandom::fill(&mut b).expect("sin aleatoriedad del sistema");
+    b.iter().map(|x| format!("{x:02x}")).collect()
 }
 
 impl Settings {
     pub fn load() -> Settings {
-        let mut s = Settings { max_rows: 1000, ..Default::default() };
+        let mut s = Settings { max_rows: 1000, serve_addr: DEFAULT_SERVE_ADDR.into(), ..Default::default() };
         let text = config_dir().and_then(|d| std::fs::read_to_string(d.join("ajustes.txt")).ok()).unwrap_or_default();
         for line in text.lines() {
             let Some((k, v)) = line.split_once('=') else { continue };
@@ -378,6 +407,11 @@ impl Settings {
                 "jvm" => s.jvm = v,
                 "filas" => s.max_rows = v.parse().unwrap_or(1000),
                 "tema" => s.dark = Some(v == "oscuro"),
+                "servir" => s.serve = v == "si",
+                "servir_en" if !v.is_empty() => s.serve_addr = v,
+                "servir_token" => s.serve_token = v,
+                "servir_claves" => s.serve_passwords = v == "si",
+                "idioma" if !v.is_empty() => s.lang = Some(v),
                 _ => {}
             }
         }
@@ -390,12 +424,26 @@ impl Settings {
     pub fn save(&self) -> std::io::Result<()> {
         let dir = config_dir().ok_or_else(|| std::io::Error::other("sin carpeta de configuración"))?;
         std::fs::create_dir_all(&dir)?;
-        let mut t = String::new();
-        t.push_str(&format!("catalogo={}\njava={}\njvm={}\nfilas={}\n", self.catalog, self.java, self.jvm, self.max_rows));
+        let yn = |b: bool| if b { "si" } else { "no" };
+        let mut t = format!(
+            "catalogo={}\njava={}\njvm={}\nfilas={}\nservir={}\nservir_en={}\nservir_token={}\nservir_claves={}\n",
+            self.catalog,
+            self.java,
+            self.jvm,
+            self.max_rows,
+            yn(self.serve),
+            self.serve_addr,
+            self.serve_token,
+            yn(self.serve_passwords)
+        );
         if let Some(d) = self.dark {
             t.push_str(if d { "tema=oscuro\n" } else { "tema=claro\n" });
         }
-        write_atomic(&dir.join("ajustes.txt"), t.as_bytes(), false)
+        if let Some(l) = &self.lang {
+            t.push_str(&format!("idioma={l}\n"));
+        }
+        // Lleva el token del servicio: solo para este usuario.
+        write_atomic(&dir.join("ajustes.txt"), t.as_bytes(), true)
     }
 
     pub fn catalog_dir(&self) -> PathBuf {
@@ -433,6 +481,26 @@ impl Secrets {
             }
         }
         Secrets { map }
+    }
+
+    /// Clave de la frase común de un catálogo, recordada en este equipo.
+    pub fn catalog_key(&self, catalog: &Path) -> Option<crate::crypto::Key> {
+        crate::crypto::key_from_hex(self.get(&format!("frase|{}", catalog.display()))?)
+    }
+
+    pub fn set_catalog_key(&mut self, catalog: &Path, key: Option<&crate::crypto::Key>) -> std::io::Result<()> {
+        self.set(format!("frase|{}", catalog.display()), key.map(crate::crypto::key_to_hex))
+    }
+
+    /// Contraseña de una conexión: la de este equipo y, si no, la compartida descifrada.
+    pub fn password_for(&self, c: &Conn, catalog: &Path) -> Option<String> {
+        if let Some(p) = self.get(&Self::key(catalog, &c.id)) {
+            return Some(p.to_owned());
+        }
+        if c.secret.is_empty() {
+            return None;
+        }
+        crate::crypto::decrypt(&self.catalog_key(catalog)?, &c.secret)
     }
 
     pub fn get(&self, key: &str) -> Option<&str> {
@@ -485,9 +553,16 @@ mod tests {
             props: vec![("oracle.net.ssl=x".into(), "a\nb".into())],
             timeout: 7,
             notes: "línea 1\nlínea 2\\".into(),
+            secret: "x1:abc=".into(),
         };
         assert_eq!(Conn::from_text("x", &c.to_text()), c);
-        assert!(!c.to_text().contains("clave"));
+    }
+
+    #[test]
+    fn hand_written_backslashes_survive() {
+        let c = Conn::from_text("h", "url=jdbc:h2:mem:x;INIT=A\\;B\\\\C\\nD\n");
+        assert_eq!(c.url, "jdbc:h2:mem:x;INIT=A\\;B\\C\nD");
+        assert_eq!(Conn::from_text("h", &c.to_text()).url, c.url);
     }
 
     #[test]

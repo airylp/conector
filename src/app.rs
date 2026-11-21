@@ -1,31 +1,45 @@
-//! Interfaz: lista de conexiones (catálogo), formulario, prueba de conexión y
-//! una consola SQL con resultados virtualizados (solo se dibujan las filas
-//! visibles; las celdas se guardan como `Box<str>`).
+//! Interfaz: lista de conexiones (catálogo), formulario, prueba de conexión,
+//! consola SQL con explorador de esquemas y resultados virtualizados (solo se
+//! dibujan las filas visibles; las celdas se guardan como `Box<str>`).
+//! También: frase común (contraseñas compartidas cifradas), descargas (Java
+//! portátil, drivers de Maven) y el servicio de red para otros programas.
 
 use crate::bridge::{self, Bridge, Event};
+use crate::crypto::{self, Key as CKey, Lock};
+use crate::i18n::{self, Lang};
+use crate::javadl::{self, State as Dl};
 use crate::proto::Msg;
-use crate::store::{Catalog, Conn, Entry, SaveError, Secrets, Settings};
+use crate::server;
+use crate::store::{self, Catalog, Conn, Entry, SaveError, Secrets, Settings};
 use eframe::egui::*;
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime};
 
-/// Plantillas de URL y clase de los drivers más comunes.
-pub const TEMPLATES: &[(&str, &str, &str)] = &[
-    ("PostgreSQL", "org.postgresql.Driver", "jdbc:postgresql://servidor:5432/basedatos"),
-    ("MySQL", "com.mysql.cj.jdbc.Driver", "jdbc:mysql://servidor:3306/basedatos"),
-    ("MariaDB", "org.mariadb.jdbc.Driver", "jdbc:mariadb://servidor:3306/basedatos"),
-    ("Oracle", "oracle.jdbc.OracleDriver", "jdbc:oracle:thin:@//servidor:1521/servicio"),
-    ("SQL Server", "com.microsoft.sqlserver.jdbc.SQLServerDriver", "jdbc:sqlserver://servidor:1433;databaseName=basedatos;encrypt=true;trustServerCertificate=true"),
-    ("DB2", "com.ibm.db2.jcc.DB2Driver", "jdbc:db2://servidor:50000/basedatos"),
-    ("Firebird", "org.firebirdsql.jdbc.FBDriver", "jdbc:firebirdsql://servidor:3050/ruta/base.fdb"),
-    ("H2 (memoria)", "org.h2.Driver", "jdbc:h2:mem:prueba"),
-    ("SQLite", "org.sqlite.JDBC", "jdbc:sqlite:/ruta/archivo.db"),
+/// Plantillas: nombre, clase del driver, URL de ejemplo, prefijo de URL.
+pub const TEMPLATES: &[(&str, &str, &str, &str)] = &[
+    ("PostgreSQL", "org.postgresql.Driver", "jdbc:postgresql://servidor:5432/basedatos", "jdbc:postgresql:"),
+    ("MySQL", "com.mysql.cj.jdbc.Driver", "jdbc:mysql://servidor:3306/basedatos", "jdbc:mysql:"),
+    ("MariaDB", "org.mariadb.jdbc.Driver", "jdbc:mariadb://servidor:3306/basedatos", "jdbc:mariadb:"),
+    ("Oracle", "oracle.jdbc.OracleDriver", "jdbc:oracle:thin:@//servidor:1521/servicio", "jdbc:oracle:"),
+    ("SQL Server", "com.microsoft.sqlserver.jdbc.SQLServerDriver", "jdbc:sqlserver://servidor:1433;databaseName=basedatos;encrypt=true;trustServerCertificate=true", "jdbc:sqlserver:"),
+    ("DB2", "com.ibm.db2.jcc.DB2Driver", "jdbc:db2://servidor:50000/basedatos", "jdbc:db2:"),
+    ("Firebird", "org.firebirdsql.jdbc.FBDriver", "jdbc:firebirdsql://servidor:3050/ruta/base.fdb", "jdbc:firebirdsql:"),
+    ("H2", "org.h2.Driver", "jdbc:h2:mem:prueba", "jdbc:h2:"),
+    ("SQLite", "org.sqlite.JDBC", "jdbc:sqlite:/ruta/archivo.db", "jdbc:sqlite:"),
 ];
+
+/// Plantilla que corresponde a una URL.
+fn template_for(url: &str) -> Option<&'static str> {
+    TEMPLATES.iter().find(|t| url.trim().starts_with(t.3)).map(|t| t.0)
+}
 
 /// Cada cuánto se mira si otro equipo cambió el catálogo.
 const SCAN_EVERY: Duration = Duration::from_secs(2);
+const GREEN: Color32 = Color32::from_rgb(60, 170, 90);
+const RED: Color32 = Color32::from_rgb(210, 70, 60);
+const ORANGE: Color32 = Color32::from_rgb(220, 140, 30);
 
 #[derive(Clone)]
 struct ErrInfo {
@@ -39,7 +53,7 @@ impl ErrInfo {
         for (k, v) in m.pairs() {
             match k {
                 "mensaje" => {}
-                "causas" => detail.push_str(&format!("Causas:\n{v}\n")),
+                "causas" => detail.push_str(&format!("{}\n{v}\n", t!("Causas:"))),
                 k => detail.push_str(&format!("{k}: {v}\n")),
             }
         }
@@ -57,44 +71,86 @@ enum TestState {
     Err(ErrInfo),
 }
 
+/// Dónde se guarda la contraseña.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Keep {
+    No,
+    /// Solo en este equipo (`secretos.txt`).
+    Local,
+    /// En el catálogo, cifrada con la frase común.
+    Shared,
+}
+
+impl Keep {
+    fn label(self) -> &'static str {
+        match self {
+            Keep::No => t!("No guardar"),
+            Keep::Local => t!("Solo en este equipo"),
+            Keep::Shared => t!("Compartida (cifrada)"),
+        }
+    }
+}
+
 /// Formulario de la conexión seleccionada (textos tal cual se editan).
 struct Form {
     conn: Conn,
     jars: String,
     props: String,
     password: String,
-    remember: bool,
+    keep: Keep,
     /// Lo que hay guardado (para saber si hay cambios).
-    saved: (Conn, String, bool),
+    saved: (Conn, String, Keep),
     /// Fecha del archivo al leerlo; `None` = conexión nueva sin archivo.
     mtime: Option<Option<SystemTime>>,
     /// Otro equipo cambió el archivo mientras se editaba.
     external: bool,
     /// Siguiente «Guardar» sobrescribe aunque haya cambiado fuera.
     force: bool,
+    /// Tiene contraseña compartida pero falta la frase para descifrarla.
+    locked: bool,
 }
 
 impl Form {
-    fn from_entry(e: &Entry, password: Option<&str>) -> Form {
+    fn from_entry(e: &Entry, secrets: &Secrets, catalog: &std::path::Path, key: Option<&CKey>) -> Form {
         let c = e.conn.clone();
-        let pass = password.unwrap_or("").to_owned();
-        let remember = password.is_some();
+        let (pass, keep, locked) = if let Some(p) = secrets.get(&Secrets::key(catalog, &c.id)) {
+            (p.to_owned(), Keep::Local, false)
+        } else if !c.secret.is_empty() {
+            match key.and_then(|k| crypto::decrypt(k, &c.secret)) {
+                Some(p) => (p, Keep::Shared, false),
+                None => (String::new(), Keep::Shared, true),
+            }
+        } else {
+            (String::new(), Keep::No, false)
+        };
         Form {
             jars: c.jars.join("\n"),
             props: c.props.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("\n"),
-            saved: (c.clone(), pass.clone(), remember),
+            saved: (c.clone(), pass.clone(), keep),
             conn: c,
             password: pass,
-            remember,
+            keep,
             mtime: Some(e.mtime),
             external: false,
             force: false,
+            locked,
         }
     }
 
     fn new_conn(name: String) -> Form {
         let c = Conn { name, ..Conn::new() };
-        Form { jars: String::new(), props: String::new(), saved: (Conn::new(), String::new(), false), conn: c, password: String::new(), remember: false, mtime: None, external: false, force: false }
+        Form {
+            jars: String::new(),
+            props: String::new(),
+            saved: (Conn::new(), String::new(), Keep::No),
+            conn: c,
+            password: String::new(),
+            keep: Keep::No,
+            mtime: None,
+            external: false,
+            force: false,
+            locked: false,
+        }
     }
 
     /// La conexión con jar y propiedades tomados de los textos.
@@ -112,7 +168,7 @@ impl Form {
     }
 
     fn dirty(&self) -> bool {
-        self.mtime.is_none() || self.built() != self.saved.0 || self.remember != self.saved.2 || (self.remember && self.password != self.saved.1)
+        self.mtime.is_none() || self.built() != self.saved.0 || self.keep != self.saved.2 || (self.keep != Keep::No && self.password != self.saved.1)
     }
 }
 
@@ -132,10 +188,44 @@ struct Console {
     error: Option<ErrInfo>,
 }
 
+/// Explorador de esquemas de la sesión abierta.
+#[derive(Default)]
+struct Explorer {
+    schemas: Vec<Schema>,
+    loading: bool,
+    error: Option<String>,
+    filter: String,
+}
+
+struct Schema {
+    cat: String,
+    sch: String,
+    tables: Option<Vec<(String, String)>>,
+    loading: bool,
+    open: bool,
+}
+
+impl Schema {
+    fn label(&self) -> &str {
+        if self.sch.is_empty() { &self.cat } else { &self.sch }
+    }
+    /// Prefijo para el SQL: `esquema.` (o `catálogo.` en bases sin esquemas).
+    fn qualifier(&self) -> &str {
+        self.label()
+    }
+}
+
+enum Meta {
+    Schemas,
+    Tables(String, String),
+    Columns(String),
+}
+
 enum Pending {
     Test,
     Open,
     Query,
+    Meta(Meta),
     Other,
 }
 
@@ -144,10 +234,21 @@ enum Picked {
     Jar(Vec<std::path::PathBuf>),
 }
 
+/// Campos de la frase común en Ajustes.
+#[derive(Default)]
+struct PassEdit {
+    unlock: String,
+    new1: String,
+    new2: String,
+    remember: bool,
+}
+
 pub struct App {
     settings: Settings,
     catalog: Catalog,
     secrets: Secrets,
+    lock: Option<Lock>,
+    key: Option<CKey>,
     entries: Vec<Entry>,
     signature: u64,
     last_scan: Instant,
@@ -156,15 +257,23 @@ pub struct App {
     filter: String,
     bridge: Bridge,
     java: Option<String>,
+    java_ok: bool,
     java_log: String,
     pending: HashMap<u64, Pending>,
+    meta_buf: HashMap<u64, (Vec<String>, Vec<Box<[Option<Box<str>>]>>)>,
     test: TestState,
     console: Console,
+    explorer: Explorer,
     status: String,
     show_settings: bool,
     settings_edit: Settings,
+    pass_edit: PassEdit,
     confirm_delete: bool,
     dialog: (Sender<Picked>, Receiver<Picked>),
+    java_dl: Option<javadl::Shared>,
+    driver_dl: Option<(javadl::Shared, bool)>,
+    server: Option<server::Server>,
+    server_err: Option<String>,
     debug_frames: u32,
 }
 
@@ -173,24 +282,37 @@ fn new_bridge(ctx: &Context, s: &Settings) -> Bridge {
     Bridge::new(bridge::Config { java: s.java.clone(), jvm_opts: s.jvm.clone() }, Arc::new(move || ctx.request_repaint()))
 }
 
+fn apply_lang(s: &Settings) {
+    let l = std::env::var("CONECTOR_IDIOMA").ok().or(s.lang.clone()).and_then(|c| Lang::from_code(&c)).or_else(i18n::system).unwrap_or(Lang::Es);
+    i18n::set(l);
+}
+
+fn apply_theme(ctx: &Context, s: &Settings) {
+    ctx.set_theme(match s.dark {
+        Some(true) => ThemePreference::Dark,
+        Some(false) => ThemePreference::Light,
+        None => ThemePreference::System,
+    });
+}
+
 impl App {
     pub fn new(cc: &eframe::CreationContext) -> App {
         let settings = Settings::load();
-        match settings.dark {
-            Some(true) => cc.egui_ctx.set_theme(ThemePreference::Dark),
-            Some(false) => cc.egui_ctx.set_theme(ThemePreference::Light),
-            None => {}
-        }
+        apply_lang(&settings);
+        apply_theme(&cc.egui_ctx, &settings);
         let catalog = Catalog { dir: settings.catalog_dir() };
         let _ = std::fs::create_dir_all(&catalog.dir);
         let entries = catalog.load();
         let mut app = App {
             bridge: new_bridge(&cc.egui_ctx, &settings),
+            java_ok: bridge::java_available(&settings.java) || std::env::var_os("CONECTOR_AUXILIAR").is_some(),
             signature: catalog.signature(),
             settings_edit: settings.clone(),
             settings,
             catalog,
             secrets: Secrets::load(),
+            lock: None,
+            key: None,
             entries,
             last_scan: Instant::now(),
             selected: None,
@@ -199,28 +321,79 @@ impl App {
             java: None,
             java_log: String::new(),
             pending: HashMap::new(),
+            meta_buf: HashMap::new(),
             test: TestState::Idle,
             console: Console { sql: "select 1".into(), ..Default::default() },
+            explorer: Explorer::default(),
             status: String::new(),
             show_settings: false,
+            pass_edit: PassEdit { remember: true, ..Default::default() },
             confirm_delete: false,
             dialog: std::sync::mpsc::channel(),
+            java_dl: None,
+            driver_dl: None,
+            server: None,
+            server_err: None,
             debug_frames: 0,
         };
+        app.load_lock();
+        app.start_server();
         if let Some(id) = app.entries.first().map(|e| e.conn.id.clone()) {
             app.select(id);
         }
         app
     }
 
-    fn secret_key(&self, id: &str) -> String {
-        Secrets::key(&self.catalog.dir, id)
+    /// Lee `cifrado.txt` del catálogo y la clave recordada en este equipo.
+    fn load_lock(&mut self) {
+        self.lock = Lock::load(&self.catalog.dir);
+        self.key = match &self.lock {
+            Some(l) => self.secrets.catalog_key(&self.catalog.dir).filter(|k| l.verify(k)),
+            None => None,
+        };
+    }
+
+    fn start_server(&mut self) {
+        self.server = None;
+        self.server_err = None;
+        if !self.settings.serve {
+            return;
+        }
+        if self.settings.serve_token.trim().len() < 16 {
+            self.settings.serve_token = store::new_token();
+            self.settings_edit.serve_token = self.settings.serve_token.clone();
+            let _ = self.settings.save();
+        }
+        let s = &self.settings;
+        let cfg = server::Config {
+            addr: s.serve_addr.clone(),
+            token: s.serve_token.clone(),
+            share_passwords: s.serve_passwords,
+            catalog: self.catalog.dir.clone(),
+            java: bridge::Config { java: s.java.clone(), jvm_opts: s.jvm.clone() },
+            max_rows: s.max_rows,
+        };
+        // El servicio anterior suelta el puerto en ~50 ms.
+        for attempt in 0..5 {
+            match server::start(cfg.clone()) {
+                Ok(srv) => {
+                    self.server = Some(srv);
+                    self.server_err = None;
+                    return;
+                }
+                Err(e) => {
+                    self.server_err = Some(e);
+                    if attempt < 4 {
+                        std::thread::sleep(Duration::from_millis(60));
+                    }
+                }
+            }
+        }
     }
 
     fn select(&mut self, id: String) {
         let Some(e) = self.entries.iter().find(|e| e.conn.id == id) else { return };
-        let key = self.secret_key(&id);
-        self.form = Some(Form::from_entry(e, self.secrets.get(&key)));
+        self.form = Some(Form::from_entry(e, &self.secrets, &self.catalog.dir, self.key.as_ref()));
         self.selected = Some(id);
         self.test = TestState::Idle;
         self.confirm_delete = false;
@@ -229,6 +402,9 @@ impl App {
     fn reload(&mut self) {
         self.entries = self.catalog.load();
         self.signature = self.catalog.signature();
+        if Lock::load(&self.catalog.dir) != self.lock {
+            self.load_lock();
+        }
         let Some(id) = self.selected.clone() else { return };
         match self.entries.iter().find(|e| e.conn.id == id) {
             Some(e) => {
@@ -256,7 +432,7 @@ impl App {
     }
 
     fn new_connection(&mut self) {
-        let mut f = Form::new_conn("Nueva conexión".into());
+        let mut f = Form::new_conn(t!("Nueva conexión").into());
         f.conn.id = self.catalog.free_id(&f.conn.name);
         self.selected = Some(f.conn.id.clone());
         self.form = Some(f);
@@ -266,11 +442,14 @@ impl App {
     fn duplicate(&mut self) {
         let Some(f) = &self.form else { return };
         let mut c = f.built();
-        c.name = format!("{} (copia)", c.name);
+        c.name = tf!("{nombre} (copia)", nombre = c.name);
         c.id = self.catalog.free_id(&c.name);
         let mut nf = Form::new_conn(c.name.clone());
         nf.jars = c.jars.join("\n");
         nf.props = f.props.clone();
+        nf.password = f.password.clone();
+        nf.keep = f.keep;
+        nf.locked = f.locked;
         nf.conn = c;
         self.selected = Some(nf.conn.id.clone());
         self.form = Some(nf);
@@ -281,24 +460,49 @@ impl App {
         let Some(f) = &mut self.form else { return };
         let mut c = f.built();
         if c.name.trim().is_empty() {
-            self.status = "Ponle un nombre a la conexión.".into();
+            self.status = t!("Ponle un nombre a la conexión.").into();
             return;
         }
         c.name = c.name.trim().into();
         if f.mtime.is_none() && self.catalog.path_of(&c.id).exists() {
             c.id = self.catalog.free_id(&c.name);
         }
+        // Contraseña: compartida cifrada, local o ninguna.
+        let local = Secrets::key(&self.catalog.dir, &c.id);
+        let local_pass = match f.keep {
+            Keep::No => {
+                c.secret.clear();
+                None
+            }
+            Keep::Local => {
+                c.secret.clear();
+                Some(f.password.clone())
+            }
+            Keep::Shared => {
+                let unchanged = f.saved.2 == Keep::Shared && f.password == f.saved.1 && !c.secret.is_empty();
+                if f.locked && f.password.is_empty() || unchanged {
+                    // Se conserva la cifrada tal cual (sin la frase no se puede rehacer).
+                } else if let Some(k) = &self.key {
+                    c.secret = crypto::encrypt(k, &f.password);
+                } else {
+                    self.status = t!("Para compartir la contraseña crea o desbloquea la frase común en Ajustes.").into();
+                    return;
+                }
+                None
+            }
+        };
         let expected = if f.force { None } else { Some(f.mtime.unwrap_or(None)) };
         match self.catalog.save(&c, expected) {
             Ok(m) => {
-                let key = Secrets::key(&self.catalog.dir, &c.id);
-                let pass = f.remember.then(|| f.password.clone());
-                if let Err(e) = self.secrets.set(key, pass) {
-                    self.status = format!("Guardada, pero no la contraseña: {e}");
+                if let Err(e) = self.secrets.set(local, local_pass) {
+                    self.status = tf!("Guardada, pero no la contraseña: {e}", e = e);
                 } else {
-                    self.status = format!("Guardada en {}", self.catalog.path_of(&c.id).display());
+                    self.status = tf!("Guardada en {ruta}", ruta = self.catalog.path_of(&c.id).display());
                 }
-                f.saved = (c.clone(), f.password.clone(), f.remember);
+                if f.keep == Keep::Shared && !c.secret.is_empty() && self.key.is_some() {
+                    f.locked = false;
+                }
+                f.saved = (c.clone(), f.password.clone(), f.keep);
                 f.conn = c.clone();
                 f.mtime = Some(m);
                 f.external = false;
@@ -310,9 +514,9 @@ impl App {
             Err(SaveError::Changed) => {
                 f.external = true;
                 f.force = true;
-                self.status = "Otro equipo o programa cambió esta conexión. Pulsa Guardar otra vez para sobrescribirla.".into();
+                self.status = t!("Otro equipo o programa cambió esta conexión. Pulsa Guardar otra vez para sobrescribirla.").into();
             }
-            Err(SaveError::Io(e)) => self.status = format!("No se pudo guardar: {e}"),
+            Err(SaveError::Io(e)) => self.status = tf!("No se pudo guardar: {e}", e = e),
         }
     }
 
@@ -320,16 +524,16 @@ impl App {
         let Some(id) = self.selected.clone() else { return };
         if self.form.as_ref().is_some_and(|f| f.mtime.is_some()) {
             if let Err(e) = self.catalog.delete(&id) {
-                self.status = format!("No se pudo borrar: {e}");
+                self.status = tf!("No se pudo borrar: {e}", e = e);
                 return;
             }
-            let key = self.secret_key(&id);
+            let key = Secrets::key(&self.catalog.dir, &id);
             let _ = self.secrets.set(key, None);
         }
         self.form = None;
         self.selected = None;
         self.reload();
-        self.status = "Conexión borrada.".into();
+        self.status = t!("Conexión borrada.").into();
     }
 
     fn request_fields(&self, f: &Form) -> Vec<(String, String)> {
@@ -346,7 +550,7 @@ impl App {
     fn test(&mut self) {
         let Some(f) = &self.form else { return };
         let fields = self.request_fields(f);
-        // Margen sobre el timeout del driver: la primera vez Java arranca (y compila).
+        // Margen sobre el timeout del driver: la primera vez Java arranca.
         let limit = Duration::from_secs(f.conn.timeout.max(1) as u64 + if self.java.is_some() { 5 } else { 20 });
         let id = self.send("probar", &fields, Pending::Test);
         self.test = TestState::Running { id, since: Instant::now(), limit };
@@ -369,30 +573,37 @@ impl App {
         }
         self.console.opening = None;
         self.console.queued = false;
+        self.explorer = Explorer::default();
+    }
+
+    fn session_id(&self) -> Option<String> {
+        self.console.session.as_ref().filter(|(s, _)| !s.is_empty()).map(|(s, _)| s.clone())
     }
 
     fn run_sql(&mut self) {
         if self.console.running.is_some() {
             return;
         }
-        let ready = self.console.session.as_ref().is_some_and(|(s, _)| !s.is_empty());
-        if !ready {
+        let Some(s) = self.session_id() else {
             if self.console.opening.is_none() {
                 if self.form.is_none() {
-                    self.status = "Elige una conexión.".into();
+                    self.status = t!("Elige una conexión.").into();
                     return;
                 }
                 self.connect();
             }
             self.console.queued = true;
             return;
-        }
-        let s = self.console.session.as_ref().unwrap().0.clone();
+        };
         let sql = self.console.sql.trim().trim_end_matches(';').to_owned();
         let fields = [("sesion".to_owned(), s), ("sql".to_owned(), sql), ("max".to_owned(), self.settings.max_rows.to_string())];
         let id = self.send("consulta", &fields, Pending::Query);
+        self.clear_results();
+        self.console.running = Some((id, Instant::now()));
+    }
+
+    fn clear_results(&mut self) {
         let c = &mut self.console;
-        c.running = Some((id, Instant::now()));
         c.cols.clear();
         c.rows = Vec::new();
         c.widths.clear();
@@ -406,9 +617,117 @@ impl App {
         }
     }
 
+    fn meta(&mut self, req: Meta) {
+        let Some(s) = self.session_id() else { return };
+        let mut f = vec![("sesion".to_owned(), s)];
+        match &req {
+            Meta::Schemas => {
+                f.push(("nivel".into(), "esquemas".into()));
+                self.explorer.loading = true;
+                self.explorer.error = None;
+            }
+            Meta::Tables(cat, sch) => {
+                f.extend([("nivel".into(), "tablas".into()), ("catalogo".into(), cat.clone()), ("esquema".into(), sch.clone())]);
+                if let Some(x) = self.explorer.schemas.iter_mut().find(|x| &x.cat == cat && &x.sch == sch) {
+                    x.loading = true;
+                }
+            }
+            Meta::Columns(label) => {
+                let (q, table) = label.rsplit_once('.').unwrap_or(("", label));
+                let sch = self.explorer.schemas.iter().find(|x| x.qualifier() == q);
+                let (cat, sch) = sch.map(|x| (x.cat.clone(), x.sch.clone())).unwrap_or_default();
+                f.extend([("nivel".into(), "columnas".into()), ("catalogo".into(), cat), ("esquema".into(), sch), ("tabla".into(), table.to_owned())]);
+                self.clear_results();
+            }
+        }
+        let id = self.send("meta", &f, Pending::Meta(req));
+        self.meta_buf.insert(id, (Vec::new(), Vec::new()));
+    }
+
     fn restart_java(&mut self) {
         self.bridge.restart();
-        self.status = "Java reiniciado: se cortan conexiones y consultas en curso.".into();
+        self.status = t!("Java reiniciado: se cortan conexiones y consultas en curso.").into();
+    }
+
+    // ---------- frase común ----------
+
+    fn unlock(&mut self) {
+        let Some(lock) = &self.lock else { return };
+        match lock.unlock(&self.pass_edit.unlock) {
+            Some(k) => {
+                self.key = Some(k);
+                if self.pass_edit.remember {
+                    let _ = self.secrets.set_catalog_key(&self.catalog.dir, Some(&k));
+                }
+                self.pass_edit = PassEdit { remember: self.pass_edit.remember, ..Default::default() };
+                self.status = t!("Catálogo desbloqueado.").into();
+                if let Some(id) = self.selected.clone().filter(|_| !self.form.as_ref().is_some_and(|f| f.dirty())) {
+                    self.select(id);
+                }
+            }
+            None => self.status = t!("La frase no es correcta.").into(),
+        }
+    }
+
+    /// Crea la frase o la cambia (vuelve a cifrar todas las contraseñas compartidas).
+    fn set_passphrase(&mut self) {
+        let p = &self.pass_edit;
+        if p.new1 != p.new2 {
+            self.status = t!("Las dos frases no coinciden.").into();
+            return;
+        }
+        if self.lock.is_some() && self.key.is_none() {
+            self.status = t!("Primero desbloquea el catálogo con la frase actual.").into();
+            return;
+        }
+        let (lock, key) = match Lock::create(&p.new1) {
+            Ok(x) => x,
+            Err(e) => {
+                self.status = e;
+                return;
+            }
+        };
+        // Volver a cifrar con la nueva clave.
+        let mut redo = Vec::new();
+        for e in self.catalog.load() {
+            if e.conn.secret.is_empty() {
+                continue;
+            }
+            match self.key.as_ref().and_then(|k| crypto::decrypt(k, &e.conn.secret)) {
+                Some(pass) => redo.push((e.conn, pass)),
+                None => {
+                    self.status = tf!("No se pudo descifrar «{nombre}»: no se cambió nada.", nombre = e.conn.name);
+                    return;
+                }
+            }
+        }
+        if let Err(e) = lock.save(&self.catalog.dir) {
+            self.status = tf!("No se pudo guardar: {e}", e = e);
+            return;
+        }
+        let n = redo.len();
+        for (mut c, pass) in redo {
+            c.secret = crypto::encrypt(&key, &pass);
+            let _ = self.catalog.save(&c, None);
+        }
+        self.lock = Some(lock);
+        self.key = Some(key);
+        let _ = self.secrets.set_catalog_key(&self.catalog.dir, if self.pass_edit.remember { Some(&key) } else { None });
+        self.pass_edit = PassEdit { remember: self.pass_edit.remember, ..Default::default() };
+        self.status = tf!("Frase común guardada; {n} contraseñas cifradas de nuevo. Compártela con tu equipo por un canal seguro.", n = n);
+        self.reload();
+        if let Some(id) = self.selected.clone() {
+            self.select(id);
+        }
+    }
+
+    fn forget_key(&mut self) {
+        self.key = None;
+        let _ = self.secrets.set_catalog_key(&self.catalog.dir, None);
+        if let Some(id) = self.selected.clone() {
+            self.select(id);
+        }
+        self.status = t!("Este equipo ya no recuerda la frase.").into();
     }
 
     // ---------- eventos de Java ----------
@@ -424,21 +743,23 @@ impl App {
                 Event::Exited(log) => {
                     self.java = None;
                     self.java_log = log.clone();
-                    let detail = if log.is_empty() { String::new() } else { format!("Últimas líneas de Java:\n{log}") };
+                    let detail = if log.is_empty() { String::new() } else { format!("{}\n{log}", t!("Últimas líneas de Java:")) };
                     let ids: Vec<u64> = self.pending.keys().copied().collect();
                     for id in ids {
-                        self.fail(id, ErrInfo { msg: "Java se cerró".into(), detail: detail.clone() });
+                        self.fail(id, ErrInfo { msg: t!("Java se cerró").into(), detail: detail.clone() });
                     }
                     if self.console.session.take().is_some() {
-                        self.console.info = "Sesión cerrada (Java terminó).".into();
+                        self.console.info = t!("Sesión cerrada (Java terminó).").into();
                     }
                     self.console.opening = None;
+                    self.explorer = Explorer::default();
                 }
             }
         }
     }
 
     fn fail(&mut self, id: u64, e: ErrInfo) {
+        self.meta_buf.remove(&id);
         match self.pending.remove(&id) {
             Some(Pending::Test) => {
                 if matches!(self.test, TestState::Running { id: t, .. } if t == id) {
@@ -459,6 +780,19 @@ impl App {
                     self.console.error = Some(e);
                 }
             }
+            Some(Pending::Meta(req)) => match req {
+                Meta::Schemas => {
+                    self.explorer.loading = false;
+                    self.explorer.error = Some(e.msg);
+                }
+                Meta::Tables(cat, sch) => {
+                    if let Some(x) = self.explorer.schemas.iter_mut().find(|x| x.cat == cat && x.sch == sch) {
+                        x.loading = false;
+                    }
+                    self.status = e.msg;
+                }
+                Meta::Columns(_) => self.console.error = Some(e),
+            },
             Some(Pending::Other) => self.status = e.msg,
             None => {}
         }
@@ -489,12 +823,13 @@ impl App {
                 if let (Some(s), Some(sess)) = (m.get("sesion"), &mut self.console.session) {
                     sess.0 = s.to_owned();
                 }
-                self.console.info = format!(
-                    "Conectado en {} ms · {} {}",
-                    m.get("ms").unwrap_or("?"),
-                    m.get("producto").unwrap_or(""),
-                    m.get("version").unwrap_or("")
+                self.console.info = tf!(
+                    "Conectado en {ms} ms · {producto} {version}",
+                    ms = m.get("ms").unwrap_or("?"),
+                    producto = m.get("producto").unwrap_or(""),
+                    version = m.get("version").unwrap_or("")
                 );
+                self.meta(Meta::Schemas);
                 if std::mem::take(&mut self.console.queued) {
                     self.run_sql();
                 }
@@ -508,30 +843,35 @@ impl App {
                     return;
                 }
                 match &*m.kind {
-                    "columnas" => {
-                        c.cols = m
-                            .fields
-                            .iter()
-                            .map(|f| {
-                                let f = f.as_deref().unwrap_or("");
-                                let (n, t) = f.split_once('\u{1}').unwrap_or((f, ""));
-                                (n.to_owned(), t.to_owned())
-                            })
-                            .collect();
-                    }
+                    "columnas" => c.cols = split_cols(&m),
                     "fila" => c.rows.push(m.fields.into_boxed_slice()),
                     "fin" => {
                         self.pending.remove(&m.id);
                         let ms = m.get("ms").unwrap_or("?");
                         let upd = m.get("actualizadas").unwrap_or("");
                         c.info = if c.cols.is_empty() {
-                            if upd.is_empty() { format!("Hecho en {ms} ms") } else { format!("Filas afectadas: {upd} · {ms} ms") }
+                            if upd.is_empty() { tf!("Hecho en {ms} ms", ms = ms) } else { tf!("Filas afectadas: {n} · {ms} ms", n = upd, ms = ms) }
+                        } else if m.get("mas") == Some("true") {
+                            tf!("{n} filas (hay más: sube el límite en Ajustes) · {ms} ms", n = c.rows.len(), ms = ms)
                         } else {
-                            let more = if m.get("mas") == Some("true") { " (hay más: sube el límite en Ajustes)" } else { "" };
-                            format!("{} filas{more} · {ms} ms", c.rows.len())
+                            tf!("{n} filas · {ms} ms", n = c.rows.len(), ms = ms)
                         };
                         c.running = None;
                         c.rows.shrink_to_fit();
+                    }
+                    _ => {}
+                }
+            }
+            Some(Pending::Meta(_)) => {
+                let Some(buf) = self.meta_buf.get_mut(&m.id) else { return };
+                match &*m.kind {
+                    "columnas" => buf.0 = split_cols(&m).into_iter().map(|c| c.0).collect(),
+                    "fila" => buf.1.push(m.fields.into_boxed_slice()),
+                    "fin" => {
+                        let (cols, rows) = self.meta_buf.remove(&m.id).unwrap_or_default();
+                        if let Some(Pending::Meta(req)) = self.pending.remove(&m.id) {
+                            self.meta_done(req, cols, rows);
+                        }
                     }
                     _ => {}
                 }
@@ -543,13 +883,52 @@ impl App {
         }
     }
 
+    fn meta_done(&mut self, req: Meta, cols: Vec<String>, rows: Vec<Box<[Option<Box<str>>]>>) {
+        let idx = |name: &str| cols.iter().position(|c| c.eq_ignore_ascii_case(name));
+        let get = |r: &[Option<Box<str>>], i: Option<usize>| i.and_then(|i| r.get(i)).and_then(|v| v.as_deref()).unwrap_or("").to_owned();
+        match req {
+            Meta::Schemas => {
+                let (c, s) = (idx("TABLE_CAT"), idx("TABLE_SCHEM"));
+                self.explorer.schemas = rows.iter().map(|r| Schema { cat: get(r, c), sch: get(r, s), tables: None, loading: false, open: false }).collect();
+                self.explorer.loading = false;
+            }
+            Meta::Tables(cat, sch) => {
+                let (n, k) = (idx("TABLE_NAME"), idx("TABLE_TYPE"));
+                let mut tables: Vec<(String, String)> = rows.iter().map(|r| (get(r, n), get(r, k))).collect();
+                tables.sort();
+                if let Some(x) = self.explorer.schemas.iter_mut().find(|x| x.cat == cat && x.sch == sch) {
+                    x.tables = Some(tables);
+                    x.loading = false;
+                }
+            }
+            Meta::Columns(label) => {
+                // Resumen legible de getColumns en la tabla de resultados.
+                let pick = [
+                    ("COLUMN_NAME", t!("columna")),
+                    ("TYPE_NAME", t!("tipo")),
+                    ("COLUMN_SIZE", t!("tamaño")),
+                    ("DECIMAL_DIGITS", t!("decimales")),
+                    ("IS_NULLABLE", t!("nulos")),
+                    ("COLUMN_DEF", t!("por defecto")),
+                    ("REMARKS", t!("comentario")),
+                ];
+                let found: Vec<(usize, &str)> = pick.iter().filter_map(|(c, l)| Some((idx(c)?, *l))).collect();
+                let c = &mut self.console;
+                c.cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
+                c.rows = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
+                c.widths.clear();
+                c.info = tf!("Columnas de {tabla}: {n}", tabla = label, n = c.rows.len());
+            }
+        }
+    }
+
     fn check_timeouts(&mut self, ctx: &Context) {
         if let TestState::Running { id, since, limit } = self.test {
             if since.elapsed() > limit {
                 self.pending.remove(&id);
-                self.test = TestState::Err(ErrInfo::plain(format!(
-                    "Sin respuesta tras {} s. El driver puede seguir intentándolo; «Reiniciar Java» lo corta.",
-                    limit.as_secs()
+                self.test = TestState::Err(ErrInfo::plain(tf!(
+                    "Sin respuesta tras {s} s. El driver puede seguir intentándolo; «Reiniciar Java» lo corta.",
+                    s = limit.as_secs()
                 )));
             } else {
                 ctx.request_repaint_after(Duration::from_millis(200));
@@ -560,7 +939,7 @@ impl App {
         }
         if self.last_scan.elapsed() >= SCAN_EVERY {
             self.last_scan = Instant::now();
-            if self.catalog.signature() != self.signature {
+            if self.catalog.signature() != self.signature || Lock::load(&self.catalog.dir) != self.lock {
                 self.reload();
             }
         }
@@ -580,6 +959,30 @@ impl App {
                     }
                 }
             }
+        }
+        // Descargas terminadas.
+        let java_done = self.java_dl.as_ref().map(|s| s.lock().unwrap().clone());
+        if let Some(Dl::Done(path)) = java_done {
+            self.java_dl = None;
+            self.java_ok = true;
+            self.bridge = new_bridge(ctx, &self.settings);
+            self.java = None;
+            self.pending.clear();
+            self.status = tf!("Java portátil listo: {ruta}", ruta = path);
+            self.start_server();
+        }
+        let driver_done = self.driver_dl.as_ref().map(|(s, add)| (s.lock().unwrap().clone(), *add));
+        if let Some((Dl::Done(rel), add)) = driver_done {
+            self.driver_dl = None;
+            if let Some(f) = self.form.as_mut().filter(|_| add) {
+                if !f.jars.lines().any(|l| l.trim() == rel) {
+                    if !f.jars.is_empty() && !f.jars.ends_with('\n') {
+                        f.jars.push('\n');
+                    }
+                    f.jars.push_str(&rel);
+                }
+            }
+            self.status = tf!("Driver descargado: {ruta}", ruta = rel);
         }
     }
 
@@ -601,23 +1004,42 @@ impl App {
         });
     }
 
+    fn waker(ctx: &Context) -> Arc<dyn Fn() + Send + Sync> {
+        let ctx = ctx.clone();
+        Arc::new(move || ctx.request_repaint())
+    }
+
+    fn download_java(&mut self, ctx: &Context) {
+        let st: javadl::Shared = Arc::new(Mutex::new(Dl::Running(String::new())));
+        javadl::download_java(&st, Self::waker(ctx));
+        self.java_dl = Some(st);
+    }
+
+    fn download_driver(&mut self, ctx: &Context, template: &str) {
+        let st: javadl::Shared = Arc::new(Mutex::new(Dl::Running(String::new())));
+        // Si la conexión lista sus jar, el nuevo se añade; si no, ya lo coge de drivers/.
+        let add = self.form.as_ref().is_some_and(|f| !f.jars.trim().is_empty());
+        javadl::download_driver(&st, Self::waker(ctx), template.to_owned(), self.catalog.dir.clone());
+        self.driver_dl = Some((st, add));
+    }
+
     fn apply_settings(&mut self, ctx: &Context) {
         let s = self.settings_edit.clone();
         let java_changed = s.java != self.settings.java || s.jvm != self.settings.jvm;
         let catalog_changed = s.catalog_dir() != self.catalog.dir;
+        let serve_changed = (s.serve, &s.serve_addr, &s.serve_token, s.serve_passwords, s.max_rows)
+            != (self.settings.serve, &self.settings.serve_addr, &self.settings.serve_token, self.settings.serve_passwords, self.settings.max_rows);
         if let Err(e) = s.save() {
-            self.status = format!("No se pudieron guardar los ajustes: {e}");
+            self.status = tf!("No se pudieron guardar los ajustes: {e}", e = e);
         }
-        match s.dark {
-            Some(true) => ctx.set_theme(ThemePreference::Dark),
-            Some(false) => ctx.set_theme(ThemePreference::Light),
-            None => ctx.set_theme(ThemePreference::System),
-        }
+        apply_theme(ctx, &s);
         self.settings = s;
+        apply_lang(&self.settings);
         if java_changed {
             self.disconnect();
             self.bridge = new_bridge(ctx, &self.settings);
             self.java = None;
+            self.java_ok = bridge::java_available(&self.settings.java);
             self.pending.clear();
             self.test = TestState::Idle;
         }
@@ -626,51 +1048,77 @@ impl App {
             let _ = std::fs::create_dir_all(&self.catalog.dir);
             self.form = None;
             self.selected = None;
+            self.load_lock();
             self.reload();
             if let Some(id) = self.entries.first().map(|e| e.conn.id.clone()) {
                 self.select(id);
             }
+        }
+        if serve_changed || catalog_changed || java_changed {
+            self.start_server();
         }
     }
 
     // ---------- dibujo ----------
 
     fn toolbar(&mut self, ui: &mut Ui) {
+        let ctx = ui.ctx().clone();
         ui.horizontal(|ui| {
-            if ui.button("＋ Nueva").clicked() {
+            if ui.button(t!("＋ Nueva")).clicked() {
                 self.new_connection();
             }
             let dirty = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
-            if ui.add_enabled(dirty, Button::new("💾 Guardar")).on_hover_text("Ctrl+S").clicked() {
+            if ui.add_enabled(dirty, Button::new(t!("💾 Guardar"))).on_hover_text("Ctrl+S").clicked() {
                 self.save();
             }
             let has = self.form.is_some();
-            if ui.add_enabled(has, Button::new("⧉ Duplicar")).clicked() {
+            if ui.add_enabled(has, Button::new(t!("⧉ Duplicar"))).clicked() {
                 self.duplicate();
             }
-            if ui.add_enabled(has, Button::new("🗑 Borrar")).clicked() {
+            if ui.add_enabled(has, Button::new(t!("🗑 Borrar"))).clicked() {
                 self.confirm_delete = true;
             }
             ui.separator();
             let busy = matches!(self.test, TestState::Running { .. });
-            if ui.add_enabled(has && !busy, Button::new("▶ Probar conexión")).on_hover_text("Ctrl+T").clicked() {
+            if ui.add_enabled(has && !busy, Button::new(t!("▶ Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
                 self.test();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.button("⚙").on_hover_text("Ajustes").clicked() {
+                if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
                     self.settings_edit = self.settings.clone();
                     self.show_settings = !self.show_settings;
                 }
-                if ui.button("⟳ Reiniciar Java").on_hover_text("Corta conexiones colgadas").clicked() {
+                if ui.button(t!("⟳ Reiniciar Java")).on_hover_text(t!("Corta conexiones colgadas")).clicked() {
                     self.restart_java();
                 }
-                let (color, text) = match self.java.as_ref().filter(|_| self.bridge.running()) {
-                    Some(v) => (Color32::from_rgb(60, 170, 90), v.clone()),
-                    None => (ui.visuals().weak_text_color(), "Java sin arrancar (arranca al probar)".into()),
-                };
-                let r = ui.label(RichText::new(format!("☕ {text}")).color(color));
-                if !self.java_log.is_empty() {
-                    r.on_hover_text(&self.java_log);
+                let dl = self.java_dl.as_ref().map(|s| s.lock().unwrap().clone());
+                match dl {
+                    Some(Dl::Running(m)) => {
+                        ui.label(m);
+                        ui.spinner();
+                    }
+                    Some(Dl::Failed(e)) => {
+                        if ui.button(t!("⬇ Reintentar")).clicked() {
+                            self.download_java(&ctx);
+                        }
+                        ui.colored_label(RED, e);
+                    }
+                    _ if !self.java_ok => {
+                        if ui.button(t!("⬇ Descargar Java portátil")).on_hover_text(t!("JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración")).clicked() {
+                            self.download_java(&ctx);
+                        }
+                        ui.colored_label(ORANGE, t!("☕ No se encuentra Java"));
+                    }
+                    _ => {
+                        let (color, text) = match self.java.as_ref().filter(|_| self.bridge.running()) {
+                            Some(v) => (GREEN, v.clone()),
+                            None => (ui.visuals().weak_text_color(), t!("Java sin arrancar (arranca al probar)").to_owned()),
+                        };
+                        let r = ui.label(RichText::new(format!("☕ {text}")).color(color));
+                        if !self.java_log.is_empty() {
+                            r.on_hover_text(&self.java_log);
+                        }
+                    }
                 }
             });
         });
@@ -678,7 +1126,7 @@ impl App {
 
     fn sidebar(&mut self, ui: &mut Ui) {
         ui.add_space(4.0);
-        ui.add(TextEdit::singleline(&mut self.filter).hint_text("🔎 Filtrar").desired_width(f32::INFINITY));
+        ui.add(TextEdit::singleline(&mut self.filter).hint_text(t!("🔎 Filtrar")).desired_width(f32::INFINITY));
         ui.add_space(4.0);
         let q = self.filter.to_lowercase();
         let mut clicked = None;
@@ -702,14 +1150,15 @@ impl App {
                 }
                 let sel = self.selected.as_deref() == Some(c.id.as_str()) && new_unsaved.is_none();
                 let dirty = sel && self.form.as_ref().is_some_and(|f| f.dirty());
-                let label = if dirty { format!("● {}", c.name) } else { c.name.clone() };
+                let lock = if c.secret.is_empty() { "" } else { " 🔑" };
+                let label = if dirty { format!("● {}{lock}", c.name) } else { format!("{}{lock}", c.name) };
                 let r = ui.selectable_label(sel, label).on_hover_text(&c.url);
                 if r.clicked() && !sel {
                     clicked = Some(c.id.clone());
                 }
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
-                ui.weak("Sin conexiones. Pulsa «＋ Nueva».");
+                ui.weak(t!("Sin conexiones. Pulsa «＋ Nueva»."));
             }
         });
         if let Some(id) = clicked {
@@ -717,73 +1166,139 @@ impl App {
         }
     }
 
+    /// Aviso de catálogo cifrado sin desbloquear.
+    fn lock_banner(&mut self, ui: &mut Ui) {
+        let needs = self.lock.is_some() && self.key.is_none() && self.entries.iter().any(|e| !e.conn.secret.is_empty());
+        if !needs {
+            return;
+        }
+        let mut go = false;
+        Frame::group(ui.style()).fill(ui.visuals().faint_bg_color).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(t!("🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:")).color(ORANGE));
+                let r = ui.add(TextEdit::singleline(&mut self.pass_edit.unlock).password(true).desired_width(180.0));
+                go = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+                ui.checkbox(&mut self.pass_edit.remember, t!("Recordar en este equipo"));
+                go |= ui.button(t!("Desbloquear")).clicked();
+            });
+        });
+        if go {
+            self.unlock();
+        }
+        ui.add_space(4.0);
+    }
+
     fn form_ui(&mut self, ui: &mut Ui) {
         let ctx = ui.ctx().clone();
+        self.lock_banner(ui);
         let mut pick_jar = false;
+        let mut want_driver = None;
+        let catalog = self.catalog.dir.clone();
+        let has_key = self.key.is_some();
+        let driver_dl = self.driver_dl.as_ref().map(|(s, _)| s.lock().unwrap().clone());
         let Some(f) = &mut self.form else {
-            ui.centered_and_justified(|ui| ui.weak("Elige o crea una conexión."));
+            ui.centered_and_justified(|ui| ui.weak(t!("Elige o crea una conexión.")));
             return;
         };
         if f.external {
-            ui.colored_label(Color32::from_rgb(220, 140, 30), "⚠ Otro equipo o programa cambió esta conexión mientras la editabas. Guardar la sobrescribe.");
+            ui.colored_label(ORANGE, t!("⚠ Otro equipo o programa cambió esta conexión mientras la editabas. Guardar la sobrescribe."));
         }
         // Ancho de los campos: lo que queda tras la columna de etiquetas (máx. 760).
-        let w = (ui.available_width() - 140.0).clamp(200.0, 760.0);
-        Grid::new("form").num_columns(2).spacing([10.0, 6.0]).min_col_width(120.0).show(ui, |ui| {
-            ui.label("Nombre");
+        let w = (ui.available_width() - 150.0).clamp(200.0, 760.0);
+        Grid::new("form").num_columns(2).spacing([10.0, 6.0]).min_col_width(130.0).show(ui, |ui| {
+            ui.label(t!("Nombre"));
             ui.add(TextEdit::singleline(&mut f.conn.name).desired_width(w));
             ui.end_row();
-            ui.label("Grupo");
-            ui.add(TextEdit::singleline(&mut f.conn.group).hint_text("p. ej. Producción").desired_width(w));
+            ui.label(t!("Grupo"));
+            ui.add(TextEdit::singleline(&mut f.conn.group).hint_text(t!("p. ej. Producción")).desired_width(w));
             ui.end_row();
-            ui.label("Tipo");
+            ui.label(t!("Tipo"));
             ui.horizontal(|ui| {
-                ComboBox::from_id_salt("plantilla").selected_text("Plantilla…").show_ui(ui, |ui| {
-                    for (name, cls, url) in TEMPLATES {
+                ComboBox::from_id_salt("plantilla").selected_text(template_for(&f.conn.url).unwrap_or(t!("Plantilla…"))).show_ui(ui, |ui| {
+                    for (name, cls, url, _) in TEMPLATES {
                         if ui.selectable_label(false, *name).clicked() {
                             f.conn.url = (*url).into();
                             f.conn.driver = (*cls).into();
                         }
                     }
                 });
-                ui.weak("rellena URL y clase");
+                ui.weak(t!("rellena URL y clase"));
             });
             ui.end_row();
-            ui.label("URL JDBC");
+            ui.label(t!("URL JDBC"));
             ui.add(TextEdit::singleline(&mut f.conn.url).font(TextStyle::Monospace).hint_text("jdbc:…").desired_width(w));
             ui.end_row();
-            ui.label("Usuario");
+            ui.label(t!("Usuario"));
             ui.add(TextEdit::singleline(&mut f.conn.user).desired_width(w));
             ui.end_row();
-            ui.label("Contraseña");
+            ui.label(t!("Contraseña"));
             ui.horizontal(|ui| {
-                ui.add(TextEdit::singleline(&mut f.password).password(true).desired_width((w - 220.0).max(120.0)));
-                ui.checkbox(&mut f.remember, "Recordar en este equipo").on_hover_text("Se guarda solo aquí (secretos.txt, permisos 600), nunca en el catálogo compartido.");
+                let hint = if f.locked { t!("cifrada: desbloquea el catálogo") } else { "" };
+                ui.add(TextEdit::singleline(&mut f.password).password(true).hint_text(hint).desired_width((w - 230.0).max(120.0)));
+                ComboBox::from_id_salt("guardar_clave").selected_text(f.keep.label()).width(200.0).show_ui(ui, |ui| {
+                    for k in [Keep::No, Keep::Local, Keep::Shared] {
+                        ui.selectable_value(&mut f.keep, k, k.label());
+                    }
+                });
             });
             ui.end_row();
-            ui.label("Clase del driver");
-            ui.add(TextEdit::singleline(&mut f.conn.driver).font(TextStyle::Monospace).hint_text("vacío = la busca en los jar según la URL").desired_width(w));
+            if f.keep == Keep::Shared && !has_key {
+                ui.label("");
+                ui.colored_label(ORANGE, t!("Para compartirla cifrada hace falta la frase común (Ajustes)."));
+                ui.end_row();
+            }
+            ui.label(t!("Clase del driver"));
+            ui.add(TextEdit::singleline(&mut f.conn.driver).font(TextStyle::Monospace).hint_text(t!("vacío = la busca en los jar según la URL")).desired_width(w));
             ui.end_row();
-            ui.label("Jar del driver").on_hover_text("Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo.");
+            ui.label(t!("Jar del driver")).on_hover_text(t!("Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo."));
             ui.horizontal_top(|ui| {
-                ui.add(TextEdit::multiline(&mut f.jars).font(TextStyle::Monospace).hint_text("vacío = <catálogo>/drivers").desired_rows(2).desired_width((w - 90.0).max(120.0)));
-                if ui.button("Añadir…").clicked() {
+                ui.add(TextEdit::multiline(&mut f.jars).font(TextStyle::Monospace).hint_text(t!("vacío = <catálogo>/drivers")).desired_rows(2).desired_width((w - 90.0).max(120.0)));
+                if ui.button(t!("Añadir…")).clicked() {
                     pick_jar = true;
                 }
             });
             ui.end_row();
-            ui.label("Propiedades");
-            ui.add(TextEdit::multiline(&mut f.props).font(TextStyle::Monospace).hint_text("clave=valor, una por línea").desired_rows(2).desired_width(w));
+            // ¿Hay jar? Si no, ofrecer descargarlo de Maven Central.
+            let jars = f.built().jar_paths(&catalog);
+            let missing: Vec<_> = jars.iter().filter(|p| !p.is_file()).collect();
+            if jars.is_empty() || !missing.is_empty() {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    let msg = if jars.is_empty() { t!("⚠ No hay jar del driver.").to_owned() } else { tf!("⚠ No existe: {ruta}", ruta = missing[0].display()) };
+                    ui.colored_label(ORANGE, msg);
+                    match &driver_dl {
+                        Some(Dl::Running(m)) => {
+                            ui.spinner();
+                            ui.label(m);
+                        }
+                        Some(Dl::Failed(e)) => {
+                            ui.colored_label(RED, e);
+                        }
+                        _ => {}
+                    }
+                    if let Some(t) = template_for(&f.conn.url).filter(|t| javadl::maven_coords(t).is_some()) {
+                        if !matches!(driver_dl, Some(Dl::Running(_))) && ui.button(tf!("⬇ Descargar driver de {nombre}", nombre = t)).on_hover_text(t!("Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)")).clicked() {
+                            want_driver = Some(t);
+                        }
+                    }
+                });
+                ui.end_row();
+            }
+            ui.label(t!("Propiedades"));
+            ui.add(TextEdit::multiline(&mut f.props).font(TextStyle::Monospace).hint_text(t!("clave=valor, una por línea")).desired_rows(2).desired_width(w));
             ui.end_row();
-            ui.label("Espera (s)");
+            ui.label(t!("Espera (s)"));
             ui.add(DragValue::new(&mut f.conn.timeout).range(1..=600));
             ui.end_row();
-            ui.label("Notas");
+            ui.label(t!("Notas"));
             ui.add(TextEdit::multiline(&mut f.conn.notes).desired_rows(1).desired_width(w));
             ui.end_row();
         });
         if pick_jar {
             self.pick(&ctx, false);
+        }
+        if let Some(t) = want_driver {
+            self.download_driver(&ctx, t);
         }
         ui.add_space(6.0);
         self.test_result(ui);
@@ -795,23 +1310,23 @@ impl App {
             TestState::Running { since, .. } => {
                 ui.horizontal(|ui| {
                     ui.spinner();
-                    let s = since.elapsed().as_secs_f32();
-                    ui.label(if self.java.is_none() && s > 0.5 { format!("Arrancando Java y conectando… {s:.0} s") } else { format!("Conectando… {s:.1} s") });
+                    let s = format!("{:.1}", since.elapsed().as_secs_f32());
+                    ui.label(if self.java.is_none() { tf!("Arrancando Java y conectando… {s} s", s = s) } else { tf!("Conectando… {s} s", s = s) });
                 });
             }
             TestState::Ok(info) => {
                 let get = |k: &str| info.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str()).unwrap_or("");
-                ui.colored_label(Color32::from_rgb(60, 170, 90), RichText::new(format!("✔ Conectó en {} ms", get("ms"))).strong());
+                ui.colored_label(GREEN, RichText::new(tf!("✔ Conectó en {ms} ms", ms = get("ms"))).strong());
                 Grid::new("info").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
                     for (k, label) in [
-                        ("producto", "Base de datos"),
-                        ("version", "Versión"),
-                        ("driver", "Driver"),
-                        ("driver_version", "Versión del driver"),
+                        ("producto", t!("Base de datos")),
+                        ("version", t!("Versión")),
+                        ("driver", t!("Driver")),
+                        ("driver_version", t!("Versión del driver")),
                         ("jdbc", "JDBC"),
-                        ("usuario", "Usuario"),
-                        ("catalogo", "Catálogo"),
-                        ("esquema", "Esquema"),
+                        ("usuario", t!("Usuario")),
+                        ("catalogo", t!("Catálogo")),
+                        ("esquema", t!("Esquema")),
                         ("valida", "isValid"),
                     ] {
                         let v = get(k);
@@ -827,33 +1342,120 @@ impl App {
         }
     }
 
+    fn explorer_ui(&mut self, ui: &mut Ui) {
+        let mut want: Option<Meta> = None;
+        let mut insert: Option<String> = None;
+        ui.horizontal(|ui| {
+            ui.strong(t!("Explorador"));
+            if self.session_id().is_some() && ui.small_button("⟳").on_hover_text(t!("Recargar")).clicked() {
+                want = Some(Meta::Schemas);
+            }
+        });
+        ui.add(TextEdit::singleline(&mut self.explorer.filter).hint_text(t!("🔎 Tabla")).desired_width(f32::INFINITY));
+        if self.session_id().is_none() {
+            ui.weak(t!("Conecta para ver esquemas y tablas."));
+        } else if self.explorer.loading {
+            ui.spinner();
+        }
+        if let Some(e) = &self.explorer.error {
+            ui.colored_label(RED, e);
+        }
+        let q = self.explorer.filter.to_lowercase();
+        ScrollArea::vertical().id_salt("explorador").auto_shrink(false).show(ui, |ui| {
+            for x in &mut self.explorer.schemas {
+                let id = ui.make_persistent_id(("esquema", &x.cat, &x.sch));
+                let header = CollapsingHeader::new(x.label().to_owned()).id_salt(id).open(Some(x.open || (!q.is_empty() && x.tables.is_some())));
+                let r = header.show(ui, |ui| {
+                    if x.loading {
+                        ui.spinner();
+                    }
+                    if let Some(tables) = &x.tables {
+                        let mut shown = 0;
+                        for (name, kind) in tables {
+                            if !q.is_empty() && !name.to_lowercase().contains(&q) {
+                                continue;
+                            }
+                            shown += 1;
+                            if shown > 2000 {
+                                ui.weak(t!("… (filtra para ver más)"));
+                                break;
+                            }
+                            let icon = if kind.to_ascii_uppercase().contains("VIEW") { "👁" } else { "▦" };
+                            let full = if x.qualifier().is_empty() { name.clone() } else { format!("{}.{name}", x.qualifier()) };
+                            let r = ui.add(Label::new(format!("{icon} {name}")).sense(Sense::click())).on_hover_text(format!("{kind}\n{}", t!("Clic: columnas · Doble clic: SELECT")));
+                            if r.double_clicked() {
+                                insert = Some(format!("select * from {full}"));
+                            } else if r.clicked() {
+                                want = Some(Meta::Columns(full.clone()));
+                            }
+                            r.context_menu(|ui| {
+                                if ui.button(t!("Ver columnas")).clicked() {
+                                    want = Some(Meta::Columns(full.clone()));
+                                    ui.close();
+                                }
+                                if ui.button("SELECT *").clicked() {
+                                    insert = Some(format!("select * from {full}"));
+                                    ui.close();
+                                }
+                                if ui.button(t!("Copiar nombre")).clicked() {
+                                    ui.ctx().copy_text(full.clone());
+                                    ui.close();
+                                }
+                            });
+                        }
+                        if tables.is_empty() {
+                            ui.weak(t!("(sin tablas)"));
+                        }
+                    }
+                });
+                if r.header_response.clicked() {
+                    x.open = !x.open;
+                    if x.open && x.tables.is_none() && !x.loading {
+                        want = Some(Meta::Tables(x.cat.clone(), x.sch.clone()));
+                    }
+                }
+            }
+        });
+        if let Some(sql) = insert {
+            self.console.sql = sql;
+            self.run_sql();
+        }
+        if let Some(m) = want {
+            self.meta(m);
+        }
+    }
+
     fn console_ui(&mut self, ui: &mut Ui) {
         ui.set_min_height(ui.available_height());
-        ui.add_space(4.0);
+        Panel::left("explorador_panel").resizable(true).default_size(220.0).min_size(120.0).show(ui, |ui| self.explorer_ui(ui));
+        CentralPanel::default().show(ui, |ui| self.sql_ui(ui));
+    }
+
+    fn sql_ui(&mut self, ui: &mut Ui) {
         let mut run = false;
         ui.horizontal(|ui| {
-            ui.strong("Consola SQL");
+            ui.strong(t!("Consola SQL"));
             match (&self.console.session, self.console.opening) {
                 (Some((_, n)), None) => {
-                    ui.colored_label(Color32::from_rgb(60, 170, 90), format!("● {n}"));
+                    ui.colored_label(GREEN, format!("● {n}"));
                 }
                 (Some((_, n)), Some(_)) => {
                     ui.spinner();
-                    ui.label(format!("Conectando a {n}…"));
+                    ui.label(tf!("Conectando a {nombre}…", nombre = n));
                 }
                 _ => {
-                    ui.weak("sin conectar (Ejecutar conecta con la seleccionada)");
+                    ui.weak(t!("sin conectar (Ejecutar conecta con la seleccionada)"));
                 }
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if self.console.session.is_some() && ui.button("Desconectar").clicked() {
+                if self.console.session.is_some() && ui.button(t!("Desconectar")).clicked() {
                     self.disconnect();
                 }
                 if self.console.running.is_some() {
-                    if ui.button("■ Cancelar").clicked() {
+                    if ui.button(t!("■ Cancelar")).clicked() {
                         self.cancel_sql();
                     }
-                } else if ui.add_enabled(self.form.is_some() || self.console.session.is_some(), Button::new("▶ Ejecutar")).on_hover_text("Ctrl+Enter").clicked() {
+                } else if ui.add_enabled(self.form.is_some() || self.console.session.is_some(), Button::new(t!("▶ Ejecutar"))).on_hover_text("Ctrl+Enter").clicked() {
                     run = true;
                 }
             });
@@ -868,16 +1470,16 @@ impl App {
         ui.horizontal(|ui| {
             if let Some((_, t)) = self.console.running {
                 ui.spinner();
-                ui.label(format!("Ejecutando… {} filas · {:.1} s", self.console.rows.len(), t.elapsed().as_secs_f32()));
+                ui.label(tf!("Ejecutando… {n} filas · {s} s", n = self.console.rows.len(), s = format!("{:.1}", t.elapsed().as_secs_f32())));
             } else {
                 ui.weak(&self.console.info);
             }
             if !self.console.rows.is_empty() {
                 ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button("Copiar como TSV").clicked() {
+                    if ui.small_button(t!("Copiar como TSV")).clicked() {
                         let t = tsv(&self.console.cols, &self.console.rows);
                         ui.ctx().copy_text(t);
-                        self.status = "Resultado copiado.".into();
+                        self.status = t!("Resultado copiado.").into();
                     }
                 });
             }
@@ -896,41 +1498,136 @@ impl App {
         let mut open = self.show_settings;
         let mut apply = false;
         let mut pick = false;
-        Window::new("Ajustes").open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
-            let s = &mut self.settings_edit;
-            Grid::new("ajustes").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label("Catálogo").on_hover_text("Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos.");
-                ui.horizontal(|ui| {
-                    ui.add(TextEdit::singleline(&mut s.catalog).hint_text(crate::store::Settings::default().catalog_dir().display().to_string()).desired_width(320.0));
-                    if ui.button("Elegir…").clicked() {
-                        pick = true;
+        let mut action: Option<u8> = None;
+        Window::new(t!("Ajustes")).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
+            ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
+                let s = &mut self.settings_edit;
+                ui.heading(t!("General"));
+                Grid::new("ajustes").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    ui.label(t!("Catálogo")).on_hover_text(t!("Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos."));
+                    ui.horizontal(|ui| {
+                        let default = store::Settings::default().catalog_dir().display().to_string();
+                        ui.add(TextEdit::singleline(&mut s.catalog).hint_text(default).desired_width(320.0));
+                        if ui.button(t!("Elegir…")).clicked() {
+                            pick = true;
+                        }
+                    });
+                    ui.end_row();
+                    ui.label("Java");
+                    ui.add(TextEdit::singleline(&mut s.java).hint_text(t!("vacío = portátil, JAVA_HOME o el del PATH")).desired_width(320.0));
+                    ui.end_row();
+                    ui.label(t!("Opciones JVM"));
+                    ui.add(TextEdit::singleline(&mut s.jvm).hint_text("-Xmx384m").desired_width(320.0));
+                    ui.end_row();
+                    ui.label(t!("Filas máximas"));
+                    ui.add(DragValue::new(&mut s.max_rows).range(1..=1_000_000));
+                    ui.end_row();
+                    ui.label(t!("Tema"));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut s.dark, None, t!("Sistema"));
+                        ui.radio_value(&mut s.dark, Some(false), t!("Claro"));
+                        ui.radio_value(&mut s.dark, Some(true), t!("Oscuro"));
+                    });
+                    ui.end_row();
+                    ui.label(t!("Idioma"));
+                    ui.horizontal(|ui| {
+                        ui.radio_value(&mut s.lang, None, t!("Sistema"));
+                        for l in Lang::ALL {
+                            ui.radio_value(&mut s.lang, Some(l.code().to_owned()), l.name());
+                        }
+                    });
+                    ui.end_row();
+                });
+                ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
+
+                ui.separator();
+                ui.heading(t!("Frase común"));
+                ui.label(t!("Cifra las contraseñas compartidas del catálogo. Todos los equipos usan la misma frase; cada uno la recuerda por su cuenta."));
+                let p = &mut self.pass_edit;
+                match (&self.lock, &self.key) {
+                    (Some(_), None) => {
+                        ui.horizontal(|ui| {
+                            ui.label(t!("Frase actual"));
+                            ui.add(TextEdit::singleline(&mut p.unlock).password(true).desired_width(220.0));
+                            if ui.button(t!("Desbloquear")).clicked() {
+                                action = Some(1);
+                            }
+                        });
                     }
+                    (Some(_), Some(_)) => {
+                        ui.horizontal(|ui| {
+                            ui.colored_label(GREEN, t!("🔓 Desbloqueado en este equipo"));
+                            if ui.button(t!("Olvidar en este equipo")).clicked() {
+                                action = Some(3);
+                            }
+                        });
+                    }
+                    (None, _) => {
+                        ui.weak(t!("Aún no hay frase en este catálogo."));
+                    }
+                }
+                if !(self.lock.is_some() && self.key.is_none()) {
+                    Grid::new("frase").num_columns(2).spacing([10.0, 4.0]).show(ui, |ui| {
+                        ui.label(if self.lock.is_some() { t!("Nueva frase") } else { t!("Frase") });
+                        ui.add(TextEdit::singleline(&mut p.new1).password(true).desired_width(220.0));
+                        ui.end_row();
+                        ui.label(t!("Repítela"));
+                        ui.add(TextEdit::singleline(&mut p.new2).password(true).desired_width(220.0));
+                        ui.end_row();
+                    });
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut p.remember, t!("Recordar en este equipo"));
+                        let label = if self.lock.is_some() { t!("Cambiar frase") } else { t!("Crear frase") };
+                        if ui.add_enabled(!p.new1.is_empty(), Button::new(label)).clicked() {
+                            action = Some(2);
+                        }
+                    });
+                }
+
+                ui.separator();
+                ui.heading(t!("Servicio de red"));
+                ui.label(t!("Otros programas, en este u otros equipos, leen y prueban las conexiones por HTTP + JSON."));
+                Grid::new("servicio").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
+                    ui.label(t!("Activo"));
+                    ui.checkbox(&mut s.serve, t!("Servir el catálogo"));
+                    ui.end_row();
+                    ui.label(t!("Dirección"));
+                    ui.add(TextEdit::singleline(&mut s.serve_addr).hint_text(store::DEFAULT_SERVE_ADDR).desired_width(200.0));
+                    ui.end_row();
+                    ui.label("Token");
+                    ui.horizontal(|ui| {
+                        ui.add(TextEdit::singleline(&mut s.serve_token).font(TextStyle::Monospace).desired_width(280.0));
+                        if ui.button(t!("Nuevo")).clicked() {
+                            s.serve_token = store::new_token();
+                        }
+                        if ui.button(t!("Copiar")).clicked() {
+                            ui.ctx().copy_text(s.serve_token.clone());
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t!("Contraseñas"));
+                    ui.checkbox(&mut s.serve_passwords, t!("Entregarlas por la red (?clave=1)"));
+                    ui.end_row();
                 });
-                ui.end_row();
-                ui.label("Java");
-                ui.add(TextEdit::singleline(&mut s.java).hint_text("vacío = JAVA_HOME o el del PATH").desired_width(320.0));
-                ui.end_row();
-                ui.label("Opciones JVM");
-                ui.add(TextEdit::singleline(&mut s.jvm).hint_text("-Xmx384m").desired_width(320.0));
-                ui.end_row();
-                ui.label("Filas máximas");
-                ui.add(DragValue::new(&mut s.max_rows).range(1..=1_000_000));
-                ui.end_row();
-                ui.label("Tema");
-                ui.horizontal(|ui| {
-                    ui.radio_value(&mut s.dark, None, "Sistema");
-                    ui.radio_value(&mut s.dark, Some(false), "Claro");
-                    ui.radio_value(&mut s.dark, Some(true), "Oscuro");
-                });
-                ui.end_row();
+                if s.serve_passwords {
+                    ui.colored_label(ORANGE, t!("⚠ Sin TLS: actívalo solo en una red de confianza, VPN o túnel SSH."));
+                }
+                let host = s.serve_addr.replace("0.0.0.0", "<este-equipo>");
+                ui.add(Label::new(RichText::new(format!("curl -H 'Authorization: Bearer {}' http://{host}/v1/conexiones", s.serve_token)).monospace().small()).wrap());
+                ui.add_space(6.0);
+                if ui.button(t!("Aplicar")).clicked() {
+                    apply = true;
+                }
             });
-            ui.add_space(6.0);
-            ui.weak(format!("Java usado: {}", bridge::java_path(&s.java).display()));
-            ui.add_space(6.0);
-            if ui.button("Aplicar").clicked() {
-                apply = true;
-            }
         });
+        match action {
+            Some(1) => {
+                self.unlock();
+            }
+            Some(2) => self.set_passphrase(),
+            Some(3) => self.forget_key(),
+            _ => {}
+        }
         if pick {
             self.pick(ctx, true);
         }
@@ -945,13 +1642,13 @@ impl App {
         let name = self.form.as_ref().map(|f| f.conn.name.clone()).unwrap_or_default();
         let mut close = false;
         let mut delete = false;
-        Window::new("Borrar conexión").collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(format!("¿Borrar «{name}» del catálogo? Desaparece también en los otros equipos que lo compartan."));
+        Window::new(t!("Borrar conexión")).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
+            ui.label(tf!("¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.", nombre = name));
             ui.horizontal(|ui| {
-                if ui.button("Borrar").clicked() {
+                if ui.button(t!("Borrar")).clicked() {
                     delete = true;
                 }
-                if ui.button("Cancelar").clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
+                if ui.button(t!("Cancelar")).clicked() || ui.input(|i| i.key_pressed(Key::Escape)) {
                     close = true;
                 }
             });
@@ -964,9 +1661,35 @@ impl App {
         }
     }
 
+    fn status_bar(&mut self, ui: &mut Ui) {
+        ui.horizontal(|ui| {
+            let r = ui.add(Label::new(RichText::new(format!("📁 {}", self.catalog.dir.display())).small()).sense(Sense::click()));
+            if r.on_hover_text(t!("Catálogo (clic: copiar la ruta)")).clicked() {
+                ui.ctx().copy_text(self.catalog.dir.display().to_string());
+            }
+            if self.key.is_some() {
+                ui.small("🔓");
+            }
+            match (&self.server, &self.server_err) {
+                (Some(s), _) => {
+                    ui.separator();
+                    ui.colored_label(GREEN, RichText::new(tf!("📡 Sirviendo en {dir}", dir = s.addr)).small());
+                }
+                (None, Some(e)) => {
+                    ui.separator();
+                    ui.colored_label(RED, RichText::new(format!("📡 {e}")).small());
+                }
+                _ => {}
+            }
+            ui.separator();
+            ui.small(&self.status);
+        });
+    }
+
     /// Pruebas: CONECTOR_CAPTURA=ruta.rgba guarda una captura (ancho, alto u32 LE +
-    /// RGBA) y sale. CONECTOR_PROBAR=1 prueba la conexión seleccionada y
-    /// CONECTOR_SQL=texto la ejecuta en la consola antes de capturar.
+    /// RGBA) y sale. CONECTOR_PROBAR=1 prueba la conexión seleccionada,
+    /// CONECTOR_SQL=texto la ejecuta en la consola, CONECTOR_TABLAS=esquema abre
+    /// ese esquema en el explorador, CONECTOR_AJUSTES=1 abre los ajustes.
     fn debug_capture(&mut self, ctx: &Context) {
         let Ok(path) = std::env::var("CONECTOR_CAPTURA") else { return };
         self.debug_frames += 1;
@@ -982,8 +1705,20 @@ impl App {
                 self.show_settings = true;
             }
         }
-        let busy = matches!(self.test, TestState::Running { .. }) || self.console.running.is_some() || self.console.opening.is_some() || self.console.queued;
-        if self.debug_frames < 30 || (busy && self.debug_frames < 600) {
+        if let Ok(sch) = std::env::var("CONECTOR_TABLAS") {
+            if let Some(x) = self.explorer.schemas.iter_mut().find(|x| x.label().eq_ignore_ascii_case(&sch)).filter(|x| x.tables.is_none() && !x.loading) {
+                x.open = true;
+                let req = Meta::Tables(x.cat.clone(), x.sch.clone());
+                self.meta(req);
+                self.explorer.filter = std::env::var("CONECTOR_FILTRO_TABLA").unwrap_or_default();
+            }
+        }
+        let busy = matches!(self.test, TestState::Running { .. })
+            || self.console.running.is_some()
+            || self.console.opening.is_some()
+            || self.console.queued
+            || self.pending.values().any(|p| matches!(p, Pending::Meta(_)));
+        if self.debug_frames < 30 || (busy && self.debug_frames < 900) {
             ctx.request_repaint();
             return;
         }
@@ -1002,10 +1737,21 @@ impl App {
     }
 }
 
+fn split_cols(m: &Msg) -> Vec<(String, String)> {
+    m.fields
+        .iter()
+        .map(|f| {
+            let f = f.as_deref().unwrap_or("");
+            let (n, t) = f.split_once('\u{1}').unwrap_or((f, ""));
+            (n.to_owned(), t.to_owned())
+        })
+        .collect()
+}
+
 fn error_box(ui: &mut Ui, e: &ErrInfo) {
-    ui.colored_label(Color32::from_rgb(210, 70, 60), RichText::new(format!("✖ {}", e.msg)).strong());
+    ui.colored_label(RED, RichText::new(format!("✖ {}", e.msg)).strong());
     if !e.detail.is_empty() {
-        CollapsingHeader::new("Detalle").id_salt(("detalle", &e.msg)).show(ui, |ui| {
+        CollapsingHeader::new(t!("Detalle")).id_salt(("detalle", &e.msg)).show(ui, |ui| {
             ui.add(Label::new(RichText::new(&e.detail).monospace().small()).wrap());
         });
     }
@@ -1051,7 +1797,10 @@ fn results_table(ui: &mut Ui, c: &mut Console) -> Option<String> {
             ui.spacing_mut().item_spacing.x = 0.0;
             ui.add_sized([48.0, row_h], Label::new(RichText::new("#").weak()));
             for ((n, t), w) in c.cols.iter().zip(&c.widths) {
-                boxed(ui, *w, row_h, Label::new(RichText::new(n).strong().monospace()).truncate()).on_hover_text(t);
+                let r = boxed(ui, *w, row_h, Label::new(RichText::new(n).strong().monospace()).truncate());
+                if !t.is_empty() {
+                    r.on_hover_text(t);
+                }
             }
         });
         ui.separator();
@@ -1072,7 +1821,7 @@ fn results_table(ui: &mut Ui, c: &mut Console) -> Option<String> {
                         let r = boxed(ui, *w, row_h, Label::new(text).truncate().sense(Sense::click()));
                         if r.clicked() {
                             ui.ctx().copy_text(cell.unwrap_or("").to_owned());
-                            copied = Some(format!("Copiado: fila {}, {}", i + 1, c.cols[j].0));
+                            copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
                         }
                     }
                 });
@@ -1113,18 +1862,9 @@ impl eframe::App for App {
             self.toolbar(ui);
             ui.add_space(1.0);
         });
-        Panel::bottom("estado").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                let r = ui.add(Label::new(RichText::new(format!("📁 {}", self.catalog.dir.display())).small()).sense(Sense::click()));
-                if r.on_hover_text("Catálogo (clic: copiar la ruta)").clicked() {
-                    ui.ctx().copy_text(self.catalog.dir.display().to_string());
-                }
-                ui.separator();
-                ui.small(&self.status);
-            });
-        });
+        Panel::bottom("estado").show(ui, |ui| self.status_bar(ui));
         Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
-        Panel::bottom("consola").resizable(true).default_size(400.0).min_size(140.0).show(ui, |ui| self.console_ui(ui));
+        Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
         CentralPanel::default().show(ui, |ui| {
             ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
         });
@@ -1136,4 +1876,3 @@ impl eframe::App for App {
         }
     }
 }
-

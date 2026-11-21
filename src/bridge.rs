@@ -1,13 +1,14 @@
-//! Puente con Java: un único proceso auxiliar (`java/ConectorHelper.java`)
+//! Puente con Java: un único proceso auxiliar (`java/ConectorHelper.java`,
+//! compilado en `java/auxiliar.jar` e incrustado en el binario: basta un JRE 8+)
 //! que se arranca al primer uso y habla el protocolo de `proto`.
 //!
 //! Por qué un proceso aparte y no JNI: la JVM no se puede descargar ni
 //! reiniciar dentro de un proceso, un driver que se cuelga o revienta se
-//! llevaría la interfaz, y no hace falta JDK para compilar. Así la interfaz
+//! llevaría la interfaz, y no hace falta Java para compilar conector. Así la interfaz
 //! queda ligera (sin JVM hasta que se usa) y «Reiniciar Java» mata conexiones
 //! colgadas.
 //!
-//! Hilos: uno escribe (y arranca el proceso: compilar puede tardar), uno lee
+//! Hilos: uno escribe (y arranca el proceso, sin bloquear a nadie), uno lee
 //! stdout y otro guarda las últimas líneas de stderr para los errores.
 
 use crate::proto::{self, Msg};
@@ -15,10 +16,13 @@ use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 
+/// Generado con `scripts/compilar-auxiliar.sh` (el test `auxiliar_al_dia` lo vigila).
+const JAR: &[u8] = include_bytes!("java/auxiliar.jar");
+#[cfg(test)]
 const SOURCE: &str = include_str!("java/ConectorHelper.java");
 const CLASS: &str = "ConectorHelper";
 const STDERR_LINES: usize = 40;
@@ -47,10 +51,30 @@ pub struct Config {
 }
 
 pub struct Bridge {
-    tx: Sender<Cmd>,
+    handle: Handle,
     pub rx: Receiver<Event>,
-    next: u64,
     running: Arc<AtomicBool>,
+}
+
+/// Para enviar órdenes desde varios hilos (el servicio de red).
+#[derive(Clone)]
+pub struct Handle {
+    tx: Sender<Cmd>,
+    next: Arc<AtomicU64>,
+}
+
+impl Handle {
+    /// Envía una orden; devuelve su id (las respuestas llevan el mismo).
+    pub fn send(&self, cmd: &str, fields: &[(&str, &str)]) -> u64 {
+        let id = self.next.fetch_add(1, Ordering::Relaxed);
+        let _ = self.tx.send(Cmd::Send(id, proto::line(cmd, id, fields)));
+        id
+    }
+
+    /// Mata el proceso (y con él conexiones y consultas colgadas).
+    pub fn restart(&self) {
+        let _ = self.tx.send(Cmd::Restart);
+    }
 }
 
 type Waker = Arc<dyn Fn() + Send + Sync>;
@@ -66,30 +90,29 @@ impl Bridge {
             .name("java-escritor".into())
             .spawn(move || writer(cfg, crx, etx, wake, r))
             .expect("hilo");
-        Bridge { tx, rx, next: 1, running }
+        Bridge { handle: Handle { tx, next: Arc::new(AtomicU64::new(1)) }, rx, running }
+    }
+
+    pub fn handle(&self) -> Handle {
+        self.handle.clone()
     }
 
     pub fn running(&self) -> bool {
         self.running.load(Ordering::Relaxed)
     }
 
-    /// Envía una orden; devuelve su id (las respuestas llevan el mismo).
     pub fn send(&mut self, cmd: &str, fields: &[(&str, &str)]) -> u64 {
-        let id = self.next;
-        self.next += 1;
-        let _ = self.tx.send(Cmd::Send(id, proto::line(cmd, id, fields)));
-        id
+        self.handle.send(cmd, fields)
     }
 
-    /// Mata el proceso (y con él conexiones y consultas colgadas).
     pub fn restart(&self) {
-        let _ = self.tx.send(Cmd::Restart);
+        self.handle.restart();
     }
 }
 
 impl Drop for Bridge {
     fn drop(&mut self) {
-        let _ = self.tx.send(Cmd::Stop);
+        let _ = self.handle.tx.send(Cmd::Stop);
     }
 }
 
@@ -234,12 +257,15 @@ pub fn conn_fields(c: &crate::store::Conn, password: &str, catalog: &Path) -> Ve
     f
 }
 
-/// Ejecutable de Java: ajuste → `JAVA_HOME/bin/java` → `java` del PATH.
+/// Ejecutable de Java: ajuste → Java portátil descargado → `JAVA_HOME` → PATH.
 pub fn java_path(setting: &str) -> PathBuf {
     let exe = if cfg!(windows) { "java.exe" } else { "java" };
     if !setting.trim().is_empty() {
         let p = PathBuf::from(setting.trim());
         return if p.is_dir() { p.join("bin").join(exe) } else { p };
+    }
+    if let Some(p) = crate::javadl::installed() {
+        return p;
     }
     if let Some(h) = std::env::var_os("JAVA_HOME").filter(|h| !h.is_empty()) {
         let p = PathBuf::from(h).join("bin").join(exe);
@@ -250,6 +276,15 @@ pub fn java_path(setting: &str) -> PathBuf {
     PathBuf::from(exe)
 }
 
+/// ¿Hay Java que ejecutar? (para ofrecer la descarga del portátil)
+pub fn java_available(setting: &str) -> bool {
+    let p = java_path(setting);
+    if p.components().count() > 1 {
+        return p.is_file();
+    }
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(&p).is_file()))
+}
+
 fn command(cfg: &Config) -> Result<Command, String> {
     // Pruebas: un auxiliar falso (`sh -c`).
     if let Some(fake) = std::env::var_os("CONECTOR_AUXILIAR") {
@@ -258,56 +293,28 @@ fn command(cfg: &Config) -> Result<Command, String> {
         return Ok(c);
     }
     let java = java_path(&cfg.java);
-    let dir = helper_dir().ok_or("sin carpeta de configuración")?;
-    let compiled = prepare(&java, &dir)?;
+    let jar = helper_jar()?;
     let mut c = Command::new(&java);
     // JVM pequeña y de arranque rápido: las filas no se acumulan en Java.
     c.args(["-Xss512k", "-XX:+UseSerialGC", "-XX:TieredStopAtLevel=1", "-Dfile.encoding=UTF-8"]);
     let opts = if cfg.jvm_opts.trim().is_empty() { "-Xmx384m" } else { cfg.jvm_opts.as_str() };
     c.args(opts.split_whitespace());
-    if compiled {
-        c.arg("-cp").arg(&dir).arg(CLASS);
-    } else {
-        // Java 11+ ejecuta el .java directamente (necesita JDK, no JRE).
-        c.arg(dir.join(format!("{CLASS}.java")));
-    }
+    c.arg("-cp").arg(jar).arg(CLASS);
     Ok(c)
 }
 
-/// Carpeta del auxiliar, distinta por versión del código fuente.
-fn helper_dir() -> Option<PathBuf> {
+/// Deja el jar incrustado en `<config>/auxiliar/<hash>.jar` (una vez por versión).
+fn helper_jar() -> Result<PathBuf, String> {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    SOURCE.hash(&mut h);
-    Some(crate::store::config_dir()?.join("auxiliar").join(format!("{:016x}", h.finish())))
-}
-
-/// Deja el .java (y el .class si hay `javac`) en `dir`. `true` = compilado.
-fn prepare(java: &Path, dir: &Path) -> Result<bool, String> {
-    let class = dir.join(format!("{CLASS}.class"));
-    if class.exists() {
-        return Ok(true);
+    JAR.hash(&mut h);
+    let dir = crate::store::config_dir().ok_or("sin carpeta de configuración")?.join("auxiliar");
+    let path = dir.join(format!("{:016x}.jar", h.finish()));
+    if std::fs::metadata(&path).map(|m| m.len()).ok() != Some(JAR.len() as u64) {
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        crate::store::write_atomic(&path, JAR, false).map_err(|e| e.to_string())?;
     }
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let src = dir.join(format!("{CLASS}.java"));
-    if std::fs::read_to_string(&src).ok().as_deref() != Some(SOURCE) {
-        crate::store::write_atomic(&src, SOURCE.as_bytes(), false).map_err(|e| e.to_string())?;
-    }
-    let javac = java.with_file_name(if cfg!(windows) { "javac.exe" } else { "javac" });
-    let javac = if java.parent().is_some_and(|p| !p.as_os_str().is_empty()) { javac } else { PathBuf::from("javac") };
-    // Bytecode de Java 8: funciona con cualquier JVM que encuentre el usuario.
-    for flags in [&["--release", "8"][..], &["-source", "8", "-target", "8"], &[]] {
-        let mut c = Command::new(&javac);
-        c.args(["-encoding", "UTF-8", "-nowarn", "-d"]).arg(dir).args(flags).arg(&src);
-        c.stdout(Stdio::null()).stderr(Stdio::null());
-        hide_console(&mut c);
-        match c.status() {
-            Ok(s) if s.success() && class.exists() => return Ok(true),
-            Ok(_) => continue,
-            Err(_) => break, // no hay javac (JRE): se ejecuta el .java
-        }
-    }
-    Ok(false)
+    Ok(path)
 }
 
 #[cfg(test)]
@@ -328,6 +335,13 @@ while IFS= read -r l; do
     *) printf 'ok\t%s\torden=%s\tms=5\tproducto=Falsa\n' "$id" "$cmd" ;;
   esac
 done"#;
+
+    /// El jar incrustado debe corresponder al .java (va sin comprimir dentro).
+    #[test]
+    fn auxiliar_al_dia() {
+        let found = JAR.windows(SOURCE.len()).any(|w| w == SOURCE.as_bytes());
+        assert!(found, "src/java/auxiliar.jar no corresponde a ConectorHelper.java: ejecuta scripts/compilar-auxiliar.sh");
+    }
 
     fn next(b: &Bridge) -> Event {
         b.rx.recv_timeout(Duration::from_secs(5)).expect("sin respuesta")

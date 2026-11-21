@@ -1,0 +1,156 @@
+# español	inglés	francés (\n = salto de línea; mismas {marcas} en las tres columnas)
+Causas:	Causes:	Causes :
+No guardar	Don't save	Ne pas enregistrer
+Solo en este equipo	Only on this computer	Uniquement sur cet ordinateur
+Compartida (cifrada)	Shared (encrypted)	Partagé (chiffré)
+Nueva conexión	New connection	Nouvelle connexion
+{nombre} (copia)	{nombre} (copy)	{nombre} (copie)
+Ponle un nombre a la conexión.	Give the connection a name.	Donnez un nom à la connexion.
+Para compartir la contraseña crea o desbloquea la frase común en Ajustes.	To share the password, create or unlock the shared passphrase in Settings.	Pour partager le mot de passe, créez ou déverrouillez la phrase commune dans Réglages.
+Guardada, pero no la contraseña: {e}	Saved, but not the password: {e}	Enregistrée, mais pas le mot de passe : {e}
+Guardada en {ruta}	Saved to {ruta}	Enregistrée dans {ruta}
+Otro equipo o programa cambió esta conexión. Pulsa Guardar otra vez para sobrescribirla.	Another computer or program changed this connection. Press Save again to overwrite it.	Un autre ordinateur ou programme a modifié cette connexion. Appuyez à nouveau sur Enregistrer pour l'écraser.
+No se pudo guardar: {e}	Could not save: {e}	Impossible d'enregistrer : {e}
+No se pudo borrar: {e}	Could not delete: {e}	Impossible de supprimer : {e}
+Conexión borrada.	Connection deleted.	Connexion supprimée.
+Elige una conexión.	Choose a connection.	Choisissez une connexion.
+Java reiniciado: se cortan conexiones y consultas en curso.	Java restarted: open connections and running queries were cut.	Java redémarré : connexions et requêtes en cours interrompues.
+Catálogo desbloqueado.	Catalog unlocked.	Catalogue déverrouillé.
+La frase no es correcta.	The passphrase is not correct.	La phrase n'est pas correcte.
+Las dos frases no coinciden.	The two passphrases don't match.	Les deux phrases ne correspondent pas.
+Primero desbloquea el catálogo con la frase actual.	First unlock the catalog with the current passphrase.	Déverrouillez d'abord le catalogue avec la phrase actuelle.
+No se pudo descifrar «{nombre}»: no se cambió nada.	Could not decrypt “{nombre}”: nothing was changed.	Impossible de déchiffrer « {nombre} » : rien n'a été modifié.
+Frase común guardada; {n} contraseñas cifradas de nuevo. Compártela con tu equipo por un canal seguro.	Shared passphrase saved; {n} passwords re-encrypted. Share it with your team over a secure channel.	Phrase commune enregistrée ; {n} mots de passe rechiffrés. Partagez-la avec votre équipe par un canal sûr.
+Este equipo ya no recuerda la frase.	This computer no longer remembers the passphrase.	Cet ordinateur ne retient plus la phrase.
+Últimas líneas de Java:	Last lines from Java:	Dernières lignes de Java :
+Java se cerró	Java exited	Java s'est arrêté
+Sesión cerrada (Java terminó).	Session closed (Java exited).	Session fermée (Java s'est arrêté).
+Hecho en {ms} ms	Done in {ms} ms	Terminé en {ms} ms
+Filas afectadas: {n} · {ms} ms	Rows affected: {n} · {ms} ms	Lignes affectées : {n} · {ms} ms
+{n} filas (hay más: sube el límite en Ajustes) · {ms} ms	{n} rows (there are more: raise the limit in Settings) · {ms} ms	{n} lignes (il y en a plus : augmentez la limite dans Réglages) · {ms} ms
+{n} filas · {ms} ms	{n} rows · {ms} ms	{n} lignes · {ms} ms
+columna	column	colonne
+tipo	type	type
+tamaño	size	taille
+decimales	decimals	décimales
+nulos	nullable	nulls
+por defecto	default	par défaut
+comentario	comment	commentaire
+Columnas de {tabla}: {n}	Columns of {tabla}: {n}	Colonnes de {tabla} : {n}
+Java portátil listo: {ruta}	Portable Java ready: {ruta}	Java portable prêt : {ruta}
+Driver descargado: {ruta}	Driver downloaded: {ruta}	Pilote téléchargé : {ruta}
+No se pudieron guardar los ajustes: {e}	Could not save the settings: {e}	Impossible d'enregistrer les réglages : {e}
+＋ Nueva	＋ New	＋ Nouvelle
+💾 Guardar	💾 Save	💾 Enregistrer
+⧉ Duplicar	⧉ Duplicate	⧉ Dupliquer
+🗑 Borrar	🗑 Delete	🗑 Supprimer
+▶ Probar conexión	▶ Test connection	▶ Tester la connexion
+Ajustes	Settings	Réglages
+⟳ Reiniciar Java	⟳ Restart Java	⟳ Redémarrer Java
+Corta conexiones colgadas	Cuts hung connections	Coupe les connexions bloquées
+⬇ Reintentar	⬇ Retry	⬇ Réessayer
+⬇ Descargar Java portátil	⬇ Download portable Java	⬇ Télécharger Java portable
+JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración	Eclipse Temurin JRE 21 (~50 MB) in the configuration folder	JRE 21 Eclipse Temurin (~50 Mo) dans le dossier de configuration
+☕ No se encuentra Java	☕ Java not found	☕ Java introuvable
+Java sin arrancar (arranca al probar)	Java not started (starts when testing)	Java non démarré (démarre au test)
+🔎 Filtrar	🔎 Filter	🔎 Filtrer
+Sin conexiones. Pulsa «＋ Nueva».	No connections. Press “＋ New”.	Aucune connexion. Appuyez sur « ＋ Nouvelle ».
+🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:	🔒 This catalog has encrypted shared passwords. Shared passphrase:	🔒 Ce catalogue contient des mots de passe partagés chiffrés. Phrase commune :
+Recordar en este equipo	Remember on this computer	Retenir sur cet ordinateur
+Desbloquear	Unlock	Déverrouiller
+Elige o crea una conexión.	Choose or create a connection.	Choisissez ou créez une connexion.
+⚠ Otro equipo o programa cambió esta conexión mientras la editabas. Guardar la sobrescribe.	⚠ Another computer or program changed this connection while you were editing it. Saving overwrites it.	⚠ Un autre ordinateur ou programme a modifié cette connexion pendant que vous l'éditiez. Enregistrer l'écrase.
+Nombre	Name	Nom
+Grupo	Group	Groupe
+p. ej. Producción	e.g. Production	p. ex. Production
+Tipo	Type	Type
+Plantilla…	Template…	Modèle…
+rellena URL y clase	fills in URL and class	remplit l'URL et la classe
+URL JDBC	JDBC URL	URL JDBC
+Usuario	User	Utilisateur
+Contraseña	Password	Mot de passe
+cifrada: desbloquea el catálogo	encrypted: unlock the catalog	chiffré : déverrouillez le catalogue
+Para compartirla cifrada hace falta la frase común (Ajustes).	Sharing it encrypted needs the shared passphrase (Settings).	Pour le partager chiffré, il faut la phrase commune (Réglages).
+Clase del driver	Driver class	Classe du pilote
+vacío = la busca en los jar según la URL	empty = found in the jars from the URL	vide = recherchée dans les jar selon l'URL
+Jar del driver	Driver jar	Jar du pilote
+Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo.	One per line: files or folders, relative to the catalog. Empty = the catalog's “drivers” folder.	Un par ligne : fichiers ou dossiers, relatifs au catalogue. Vide = dossier « drivers » du catalogue.
+vacío = <catálogo>/drivers	empty = <catalog>/drivers	vide = <catalogue>/drivers
+Añadir…	Add…	Ajouter…
+⚠ No hay jar del driver.	⚠ No driver jar.	⚠ Aucun jar de pilote.
+⚠ No existe: {ruta}	⚠ Does not exist: {ruta}	⚠ N'existe pas : {ruta}
+⬇ Descargar driver de {nombre}	⬇ Download {nombre} driver	⬇ Télécharger le pilote {nombre}
+Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)	From Maven Central into the catalog's drivers folder (shared with it)	Depuis Maven Central vers le dossier drivers du catalogue (partagé avec lui)
+Propiedades	Properties	Propriétés
+clave=valor, una por línea	key=value, one per line	clé=valeur, une par ligne
+Espera (s)	Timeout (s)	Délai (s)
+Notas	Notes	Notes
+Arrancando Java y conectando… {s} s	Starting Java and connecting… {s} s	Démarrage de Java et connexion… {s} s
+Conectando… {s} s	Connecting… {s} s	Connexion… {s} s
+✔ Conectó en {ms} ms	✔ Connected in {ms} ms	✔ Connecté en {ms} ms
+Base de datos	Database	Base de données
+Versión	Version	Version
+Driver	Driver	Pilote
+Versión del driver	Driver version	Version du pilote
+Catálogo	Catalog	Catalogue
+Esquema	Schema	Schéma
+Explorador	Explorer	Explorateur
+Recargar	Reload	Recharger
+🔎 Tabla	🔎 Table	🔎 Table
+Conecta para ver esquemas y tablas.	Connect to see schemas and tables.	Connectez-vous pour voir schémas et tables.
+… (filtra para ver más)	… (filter to see more)	… (filtrez pour en voir plus)
+Clic: columnas · Doble clic: SELECT	Click: columns · Double-click: SELECT	Clic : colonnes · Double-clic : SELECT
+Ver columnas	Show columns	Voir les colonnes
+Copiar nombre	Copy name	Copier le nom
+(sin tablas)	(no tables)	(aucune table)
+Consola SQL	SQL console	Console SQL
+Conectando a {nombre}…	Connecting to {nombre}…	Connexion à {nombre}…
+sin conectar (Ejecutar conecta con la seleccionada)	not connected (Run connects to the selected one)	non connecté (Exécuter se connecte à la sélection)
+Desconectar	Disconnect	Déconnecter
+■ Cancelar	■ Cancel	■ Annuler
+▶ Ejecutar	▶ Run	▶ Exécuter
+Ejecutando… {n} filas · {s} s	Running… {n} rows · {s} s	Exécution… {n} lignes · {s} s
+Copiar como TSV	Copy as TSV	Copier en TSV
+Resultado copiado.	Result copied.	Résultat copié.
+General	General	Général
+Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos.	Folder holding the connections. Put it in a shared folder (network, git, Syncthing…) to use them from other computers.	Dossier des connexions. Placez-le dans un dossier partagé (réseau, git, Syncthing…) pour les utiliser depuis d'autres ordinateurs.
+Elegir…	Choose…	Choisir…
+vacío = portátil, JAVA_HOME o el del PATH	empty = portable, JAVA_HOME or the one on PATH	vide = portable, JAVA_HOME ou celui du PATH
+Opciones JVM	JVM options	Options JVM
+Filas máximas	Maximum rows	Lignes maximum
+Tema	Theme	Thème
+Sistema	System	Système
+Claro	Light	Clair
+Oscuro	Dark	Sombre
+Idioma	Language	Langue
+Java usado: {ruta}	Java in use: {ruta}	Java utilisé : {ruta}
+Frase común	Shared passphrase	Phrase commune
+Cifra las contraseñas compartidas del catálogo. Todos los equipos usan la misma frase; cada uno la recuerda por su cuenta.	Encrypts the catalog's shared passwords. Every computer uses the same passphrase; each one remembers it on its own.	Chiffre les mots de passe partagés du catalogue. Tous les ordinateurs utilisent la même phrase ; chacun la retient de son côté.
+Frase actual	Current passphrase	Phrase actuelle
+🔓 Desbloqueado en este equipo	🔓 Unlocked on this computer	🔓 Déverrouillé sur cet ordinateur
+Olvidar en este equipo	Forget on this computer	Oublier sur cet ordinateur
+Aún no hay frase en este catálogo.	This catalog has no passphrase yet.	Ce catalogue n'a pas encore de phrase.
+Nueva frase	New passphrase	Nouvelle phrase
+Frase	Passphrase	Phrase
+Repítela	Repeat it	Répétez-la
+Cambiar frase	Change passphrase	Changer la phrase
+Crear frase	Create passphrase	Créer la phrase
+Servicio de red	Network service	Service réseau
+Otros programas, en este u otros equipos, leen y prueban las conexiones por HTTP + JSON.	Other programs, on this or other computers, read and test the connections over HTTP + JSON.	D'autres programmes, sur cet ordinateur ou d'autres, lisent et testent les connexions via HTTP + JSON.
+Activo	Enabled	Activé
+Servir el catálogo	Serve the catalog	Servir le catalogue
+Dirección	Address	Adresse
+Nuevo	New	Nouveau
+Copiar	Copy	Copier
+Contraseñas	Passwords	Mots de passe
+Entregarlas por la red (?clave=1)	Hand them out over the network (?clave=1)	Les fournir par le réseau (?clave=1)
+⚠ Sin TLS: actívalo solo en una red de confianza, VPN o túnel SSH.	⚠ No TLS: enable only on a trusted network, VPN or SSH tunnel.	⚠ Sans TLS : à activer uniquement sur un réseau de confiance, VPN ou tunnel SSH.
+Aplicar	Apply	Appliquer
+Borrar conexión	Delete connection	Supprimer la connexion
+¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.	Delete “{nombre}” from the catalog? It also disappears on the other computers sharing it.	Supprimer « {nombre} » du catalogue ? Elle disparaît aussi sur les autres ordinateurs qui le partagent.
+Borrar	Delete	Supprimer
+Cancelar	Cancel	Annuler
+Catálogo (clic: copiar la ruta)	Catalog (click: copy the path)	Catalogue (clic : copier le chemin)
+📡 Sirviendo en {dir}	📡 Serving on {dir}	📡 Service sur {dir}
+Detalle	Details	Détail
+Copiado: fila {n}, {columna}	Copied: row {n}, {columna}	Copié : ligne {n}, {columna}

@@ -22,6 +22,7 @@ public final class ConectorHelper {
     static final Map<String, ClassLoader> LOADERS = new ConcurrentHashMap<String, ClassLoader>();
     static final Map<Long, Connection> SESSIONS = new ConcurrentHashMap<Long, Connection>();
     static final Map<String, Statement> RUNNING = new ConcurrentHashMap<String, Statement>();
+    static final Map<String, ExecutorService> QUEUES = new HashMap<String, ExecutorService>();
     static final AtomicLong NEXT_SESSION = new AtomicLong(1);
     /** Máximo de caracteres por celda que se envían (ahorra memoria en la interfaz). */
     static final int MAX_CELL = 4096;
@@ -43,14 +44,45 @@ public final class ConectorHelper {
             if (line.isEmpty()) continue;
             final List<String> f = split(line);
             if (f.get(0).equals("salir")) break;
-            pool.execute(new Runnable() {
+            Runnable job = new Runnable() {
                 public void run() { handle(f); }
-            });
+            };
+            // Una conexión JDBC no admite dos órdenes a la vez: las de una misma
+            // sesión van a su cola, en orden de llegada. «cancelar» nunca espera.
+            String s = f.get(0).equals("cancelar") ? null : field(f, "sesion");
+            if (s == null) {
+                pool.execute(job);
+            } else {
+                ExecutorService q = QUEUES.get(s);
+                if (q == null) {
+                    q = Executors.newSingleThreadExecutor(new ThreadFactory() {
+                        public Thread newThread(Runnable r) {
+                            Thread t = new Thread(r, "sesion");
+                            t.setDaemon(true);
+                            return t;
+                        }
+                    });
+                    QUEUES.put(s, q);
+                }
+                q.execute(job);
+                if (f.get(0).equals("cerrar")) {
+                    QUEUES.remove(s);
+                    q.shutdown(); // termina tras lo pendiente
+                }
+            }
         }
         for (Connection c : SESSIONS.values()) {
             try { c.close(); } catch (Throwable ignored) { }
         }
         System.exit(0);
+    }
+
+    static String field(List<String> f, String key) {
+        for (int i = 2; i < f.size(); i++) {
+            String kv = f.get(i);
+            if (kv != null && kv.startsWith(key + "=")) return kv.substring(key.length() + 1);
+        }
+        return null;
     }
 
     static void handle(List<String> f) {
@@ -73,6 +105,7 @@ public final class ConectorHelper {
             if (cmd.equals("probar")) test(id, a, jars, props);
             else if (cmd.equals("abrir")) open(id, a, jars, props);
             else if (cmd.equals("consulta")) query(id, a);
+            else if (cmd.equals("meta")) meta(id, a);
             else if (cmd.equals("cancelar")) cancel(id, a);
             else if (cmd.equals("cerrar")) close(id, a);
             else send("error", id, "mensaje=orden desconocida: " + cmd);
@@ -183,6 +216,10 @@ public final class ConectorHelper {
 
     static void query(String id, Map<String, String> a) throws Exception {
         Connection c = session(a);
+        runQuery(id, c, a);
+    }
+
+    static void runQuery(String id, Connection c, Map<String, String> a) throws Exception {
         String sql = a.containsKey("sql") ? a.get("sql") : "";
         int max = a.containsKey("max") ? Integer.parseInt(a.get("max")) : 1000;
         long t0 = System.nanoTime();
@@ -197,25 +234,9 @@ public final class ConectorHelper {
             StringBuilder updates = new StringBuilder();
             while (true) {
                 if (rs) {
-                    ResultSet r = st.getResultSet();
-                    try {
-                        ResultSetMetaData md = r.getMetaData();
-                        int n = md.getColumnCount();
-                        String[] cols = new String[n];
-                        for (int i = 0; i < n; i++) {
-                            cols[i] = md.getColumnLabel(i + 1) + "\u0001" + md.getColumnTypeName(i + 1);
-                        }
-                        send("columnas", id, cols);
-                        String[] cells = new String[n];
-                        while (r.next()) {
-                            if (max > 0 && rows >= max) { more = true; break; }
-                            for (int i = 0; i < n; i++) cells[i] = cell(r, i + 1, md.getColumnType(i + 1));
-                            send("fila", id, cells);
-                            rows++;
-                        }
-                    } finally {
-                        r.close();
-                    }
+                    long[] res = stream(id, st.getResultSet(), max);
+                    rows = res[0];
+                    more = res[1] != 0;
                     break; // la interfaz muestra un resultado
                 }
                 int u = st.getUpdateCount();
@@ -230,6 +251,84 @@ public final class ConectorHelper {
             RUNNING.remove(id);
             try { st.close(); } catch (Throwable ignored) { }
         }
+    }
+
+    /** Envía columnas y filas de un ResultSet (y lo cierra). Devuelve {filas, ¿hay más?}. */
+    static long[] stream(String id, ResultSet r, int max) throws SQLException {
+        long rows = 0;
+        boolean more = false;
+        try {
+            ResultSetMetaData md = r.getMetaData();
+            int n = md.getColumnCount();
+            String[] cols = new String[n];
+            int[] types = new int[n];
+            for (int i = 0; i < n; i++) {
+                cols[i] = md.getColumnLabel(i + 1) + "\u0001" + md.getColumnTypeName(i + 1);
+                types[i] = md.getColumnType(i + 1);
+            }
+            send("columnas", id, cols);
+            String[] cells = new String[n];
+            while (r.next()) {
+                if (max > 0 && rows >= max) { more = true; break; }
+                for (int i = 0; i < n; i++) cells[i] = cell(r, i + 1, types[i]);
+                send("fila", id, cells);
+                rows++;
+            }
+        } finally {
+            r.close();
+        }
+        return new long[] { rows, more ? 1 : 0 };
+    }
+
+    /**
+     * Explorador: nivel=esquemas | tablas (catalogo, esquema) | columnas (+ tabla).
+     * Responde como una consulta (columnas, filas, fin) con las de DatabaseMetaData.
+     */
+    static void meta(String id, Map<String, String> a) throws Exception {
+        Connection c = session(a);
+        DatabaseMetaData m = c.getMetaData();
+        String level = a.containsKey("nivel") ? a.get("nivel") : "esquemas";
+        String cat = emptyToNull(a.get("catalogo")), sch = emptyToNull(a.get("esquema"));
+        long t0 = System.nanoTime();
+        long[] res;
+        if (level.equals("esquemas")) {
+            // Unas bases usan esquemas (Oracle, PostgreSQL), otras catálogos (MySQL).
+            ResultSet r = m.getSchemas();
+            List<String[]> rows = new ArrayList<String[]>();
+            try {
+                while (r.next()) rows.add(new String[] { safeString(r, "TABLE_CATALOG"), r.getString("TABLE_SCHEM") });
+            } finally {
+                r.close();
+            }
+            if (rows.isEmpty()) {
+                r = m.getCatalogs();
+                try {
+                    while (r.next()) rows.add(new String[] { r.getString("TABLE_CAT"), null });
+                } finally {
+                    r.close();
+                }
+            }
+            send("columnas", id, "TABLE_CAT\u0001", "TABLE_SCHEM\u0001");
+            for (String[] row : rows) send("fila", id, row);
+            res = new long[] { rows.size(), 0 };
+        } else if (level.equals("tablas")) {
+            res = stream(id, m.getTables(cat, sch, "%", null), 50000);
+        } else if (level.equals("columnas")) {
+            res = stream(id, m.getColumns(cat, sch, a.get("tabla"), "%"), 50000);
+        } else {
+            throw new IllegalArgumentException("nivel desconocido: " + level);
+        }
+        long ms = (System.nanoTime() - t0) / 1000000;
+        send("fin", id, "filas=" + res[0], "mas=" + (res[1] != 0), "actualizadas=", "ms=" + ms);
+    }
+
+    static String emptyToNull(String s) {
+        return s == null || s.isEmpty() ? null : s;
+    }
+
+    /** TABLE_CATALOG no existe en drivers JDBC 3 antiguos. */
+    static String safeString(ResultSet r, String col) {
+        try { return r.getString(col); } catch (Throwable e) { return null; }
     }
 
     static String cell(ResultSet r, int i, int type) throws SQLException {

@@ -3,3 +3,4 @@
 *.png
 CLAUDE.md
 .claude/settings.local.json
+/entorno

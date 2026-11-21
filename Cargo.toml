@@ -5,8 +5,16 @@ edition = "2024"
 license = "MIT"
 
 [dependencies]
+argon2 = "0.6.0"
+base64 = "0.23.1"
+chacha20poly1305 = "0.11.0"
 eframe = "0.37"
+getrandom = "0.4.3"
 rfd = "0.17.2"
+
+# Ícono y datos de versión del .exe (solo al compilar en Windows): ver build.rs.
+[target.'cfg(windows)'.build-dependencies]
+winresource = { version = "0.1", default-features = false }
 
 [profile.release]
 opt-level = 3
