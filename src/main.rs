@@ -10,6 +10,7 @@ mod icon;
 mod javadl;
 mod proto;
 mod server;
+mod sql;
 mod store;
 mod tls;
 

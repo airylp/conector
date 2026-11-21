@@ -172,20 +172,69 @@ impl Form {
     }
 }
 
+/// Un resultado de la consola (una pestaña).
 #[derive(Default)]
-struct Console {
-    /// Sesión abierta en Java: (número, nombre de la conexión).
-    session: Option<(String, String)>,
-    opening: Option<u64>,
-    /// SQL a ejecutar en cuanto se abra la sesión.
-    queued: bool,
-    sql: String,
-    running: Option<(u64, Instant)>,
+struct ResultTab {
+    title: String,
     cols: Vec<(String, String)>,
     rows: Vec<Box<[Option<Box<str>>]>>,
     widths: Vec<f32>,
     info: String,
+}
+
+/// Máximo de pestañas de resultados (las más viejas se cierran).
+const MAX_TABS: usize = 30;
+
+#[derive(Default)]
+struct Console {
+    /// Sesión abierta en Java: (número, nombre de la conexión, id de la conexión).
+    session: Option<(String, String)>,
+    session_conn: String,
+    opening: Option<u64>,
+    /// Ejecutar la cola en cuanto se abra la sesión.
+    queued: bool,
+    sql: String,
+    /// Sentencias pendientes del script en curso.
+    queue: std::collections::VecDeque<String>,
+    /// Sentencia en curso: (id, inicio, texto, ¿ya tiene pestaña?).
+    running: Option<(u64, Instant)>,
+    current: String,
+    current_tab: bool,
+    tabs: Vec<ResultTab>,
+    /// Pestaña visible; `None` = Mensajes.
+    active: Option<usize>,
+    /// Mensajes de la ejecución: (¿bien?, texto).
+    log: Vec<(bool, String)>,
+    /// Información de la sesión (conectado en…).
+    info: String,
     error: Option<ErrInfo>,
+    /// Seguir con el script aunque una sentencia falle.
+    keep_going: bool,
+    /// Cursor y selección del editor (bytes), del fotograma anterior.
+    cursor: usize,
+    selection: Option<std::ops::Range<usize>>,
+    show_history: bool,
+    history_filter: String,
+}
+
+impl Console {
+    fn tab(&mut self) -> Option<&mut ResultTab> {
+        self.active.and_then(|i| self.tabs.get_mut(i))
+    }
+
+    fn push_tab(&mut self, t: ResultTab) {
+        if self.tabs.len() >= MAX_TABS {
+            self.tabs.remove(0);
+        }
+        self.tabs.push(t);
+        self.active = Some(self.tabs.len() - 1);
+    }
+}
+
+/// Título corto de una sentencia para su pestaña.
+fn short_title(sql: &str) -> String {
+    let one: String = crate::sql::strip_leading_comments(sql).split_whitespace().collect::<Vec<_>>().join(" ");
+    if one.chars().count() > 40 { format!("{}…", one.chars().take(39).collect::<String>()) } else { one }
 }
 
 /// Explorador de esquemas de la sesión abierta.
@@ -577,10 +626,12 @@ impl App {
         let Some(f) = &self.form else { return };
         let fields = self.request_fields(f);
         let name = f.conn.name.clone();
+        let conn_id = f.conn.id.clone();
         self.disconnect();
         let id = self.send("abrir", &fields, Pending::Open);
         self.console.opening = Some(id);
         self.console.session = Some((String::new(), name));
+        self.console.session_conn = conn_id;
         self.console.error = None;
     }
 
@@ -590,6 +641,7 @@ impl App {
         }
         self.console.opening = None;
         self.console.queued = false;
+        self.console.queue.clear();
         self.explorer = Explorer::default();
     }
 
@@ -597,41 +649,110 @@ impl App {
         self.console.session.as_ref().filter(|(s, _)| !s.is_empty()).map(|(s, _)| s.clone())
     }
 
-    fn run_sql(&mut self) {
+    /// Ejecuta la selección o la sentencia bajo el cursor (`all` = todo el script).
+    fn run_sql(&mut self, all: bool) {
         if self.console.running.is_some() {
             return;
         }
+        let text = self.console.sql.clone();
+        let piece = match (&self.console.selection, all) {
+            (Some(r), false) if r.end <= text.len() && !text[r.clone()].trim().is_empty() => text[r.clone()].to_owned(),
+            (_, false) => match crate::sql::at_cursor(&text, self.console.cursor.min(text.len())) {
+                Some(r) => text[r].to_owned(),
+                None => return,
+            },
+            (_, true) => text,
+        };
+        let stmts: Vec<String> = crate::sql::split(&piece).into_iter().map(|r| crate::sql::for_jdbc(&piece[r])).filter(|s| !s.is_empty()).collect();
+        if stmts.is_empty() {
+            return;
+        }
+        let c = &mut self.console;
+        c.tabs.clear();
+        c.active = None;
+        c.log.clear();
+        c.error = None;
+        c.queue = stmts.into();
+        self.next_statement();
+    }
+
+    /// Lanza la siguiente sentencia de la cola (abre la sesión si hace falta).
+    fn next_statement(&mut self) {
         let Some(s) = self.session_id() else {
             if self.console.opening.is_none() {
                 if self.form.is_none() {
                     self.status = t!("Elige una conexión.").into();
+                    self.console.queue.clear();
                     return;
                 }
-                self.connect();
+                self.connect_keep_queue();
             }
             self.console.queued = true;
             return;
         };
-        let sql = self.console.sql.trim().trim_end_matches(';').to_owned();
-        let fields = [("sesion".to_owned(), s), ("sql".to_owned(), sql), ("max".to_owned(), self.settings.max_rows.to_string())];
+        let Some(sql) = self.console.queue.pop_front() else { return };
+        self.history_add(&sql);
+        let fields = [("sesion".to_owned(), s), ("sql".to_owned(), sql.clone()), ("max".to_owned(), self.settings.max_rows.to_string())];
         let id = self.send("consulta", &fields, Pending::Query);
-        self.clear_results();
-        self.console.running = Some((id, Instant::now()));
+        let c = &mut self.console;
+        c.running = Some((id, Instant::now()));
+        c.current = sql;
+        c.current_tab = false;
     }
 
-    fn clear_results(&mut self) {
-        let c = &mut self.console;
-        c.cols.clear();
-        c.rows = Vec::new();
-        c.widths.clear();
-        c.info.clear();
-        c.error = None;
+    /// Como `connect` pero sin vaciar la cola de sentencias.
+    fn connect_keep_queue(&mut self) {
+        let queue = std::mem::take(&mut self.console.queue);
+        self.connect();
+        self.console.queue = queue;
     }
 
     fn cancel_sql(&mut self) {
+        self.console.queue.clear();
         if let Some((id, _)) = self.console.running {
             self.send("cancelar", &[("objetivo".into(), id.to_string())], Pending::Other);
         }
+    }
+
+    // ---------- historial de SQL (por conexión, en este equipo) ----------
+
+    fn history_path(&self, conn: &str) -> Option<std::path::PathBuf> {
+        Some(store::config_dir()?.join("historial").join(format!("{}.txt", store::slug(conn))))
+    }
+
+    /// Entradas `(segundos unix, sql)`, la más reciente al final.
+    fn history(&self, conn: &str) -> Vec<(u64, String)> {
+        let Some(text) = self.history_path(conn).and_then(|p| std::fs::read_to_string(p).ok()) else { return Vec::new() };
+        text.lines()
+            .filter_map(|l| {
+                let (t, q) = l.split_once('\t')?;
+                // Mismo escape que el protocolo (\\ \t \n \r).
+                Some((t.parse().ok()?, crate::proto::split(q).into_iter().next()??.into()))
+            })
+            .collect()
+    }
+
+    fn history_add(&mut self, sql: &str) {
+        let conn = self.console.session_conn.clone();
+        if conn.is_empty() || std::env::var_os("CONECTOR_CAPTURA").is_some() {
+            return;
+        }
+        let Some(path) = self.history_path(&conn) else { return };
+        let mut h = self.history(&conn);
+        h.retain(|(_, q)| q != sql);
+        let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        h.push((now, sql.to_owned()));
+        let skip = h.len().saturating_sub(500);
+        let mut text = String::new();
+        for (t, q) in &h[skip..] {
+            text.push_str(&format!("{t}\t"));
+            crate::proto::escape_into(&mut text, q);
+            text.push('\n');
+        }
+        if let Some(d) = path.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = store::write_atomic(&path, text.as_bytes(), true);
     }
 
     fn meta(&mut self, req: Meta) {
@@ -654,7 +775,6 @@ impl App {
                 let sch = self.explorer.schemas.iter().find(|x| x.qualifier() == q);
                 let (cat, sch) = sch.map(|x| (x.cat.clone(), x.sch.clone())).unwrap_or_default();
                 f.extend([("nivel".into(), "columnas".into()), ("catalogo".into(), cat), ("esquema".into(), sch), ("tabla".into(), table.to_owned())]);
-                self.clear_results();
             }
         }
         let id = self.send("meta", &f, Pending::Meta(req));
@@ -792,9 +912,17 @@ impl App {
                 }
             }
             Some(Pending::Query) => {
-                if self.console.running.is_some_and(|(r, _)| r == id) {
-                    self.console.running = None;
-                    self.console.error = Some(e);
+                let c = &mut self.console;
+                if c.running.is_some_and(|(r, _)| r == id) {
+                    c.running = None;
+                    c.log.push((false, format!("✖ {} — {}", short_title(&c.current), e.msg)));
+                    c.error = Some(e);
+                    c.active = None;
+                    if c.keep_going && !c.queue.is_empty() {
+                        self.next_statement();
+                    } else {
+                        c.queue.clear();
+                    }
                 }
             }
             Some(Pending::Meta(req)) => match req {
@@ -808,7 +936,10 @@ impl App {
                     }
                     self.status = e.msg;
                 }
-                Meta::Columns(_) => self.console.error = Some(e),
+                Meta::Columns(_) => {
+                    self.console.error = Some(e);
+                    self.console.active = None;
+                }
             },
             Some(Pending::Other) => self.status = e.msg,
             None => {}
@@ -848,7 +979,7 @@ impl App {
                 );
                 self.meta(Meta::Schemas);
                 if std::mem::take(&mut self.console.queued) {
-                    self.run_sql();
+                    self.next_statement();
                 }
             }
             Some(Pending::Query) => {
@@ -860,21 +991,42 @@ impl App {
                     return;
                 }
                 match &*m.kind {
-                    "columnas" => c.cols = split_cols(&m),
-                    "fila" => c.rows.push(m.fields.into_boxed_slice()),
+                    "columnas" => {
+                        let title = short_title(&c.current);
+                        c.push_tab(ResultTab { title, cols: split_cols(&m), ..Default::default() });
+                        c.current_tab = true;
+                    }
+                    "fila" => {
+                        if let Some(t) = c.tabs.last_mut().filter(|_| c.current_tab) {
+                            t.rows.push(m.fields.into_boxed_slice());
+                        }
+                    }
                     "fin" => {
                         self.pending.remove(&m.id);
                         let ms = m.get("ms").unwrap_or("?");
                         let upd = m.get("actualizadas").unwrap_or("");
-                        c.info = if c.cols.is_empty() {
-                            if upd.is_empty() { tf!("Hecho en {ms} ms", ms = ms) } else { tf!("Filas afectadas: {n} · {ms} ms", n = upd, ms = ms) }
-                        } else if m.get("mas") == Some("true") {
-                            tf!("{n} filas (hay más: sube el límite en Ajustes) · {ms} ms", n = c.rows.len(), ms = ms)
+                        let title = short_title(&c.current);
+                        if c.current_tab {
+                            let t = c.tabs.last_mut().unwrap();
+                            t.info = if m.get("mas") == Some("true") {
+                                tf!("{n} filas (hay más: sube el límite en Ajustes) · {ms} ms", n = t.rows.len(), ms = ms)
+                            } else {
+                                tf!("{n} filas · {ms} ms", n = t.rows.len(), ms = ms)
+                            };
+                            t.rows.shrink_to_fit();
+                            let line = format!("✔ {title} — {}", t.info);
+                            c.log.push((true, line));
                         } else {
-                            tf!("{n} filas · {ms} ms", n = c.rows.len(), ms = ms)
-                        };
+                            let info = if upd.is_empty() { tf!("Hecho en {ms} ms", ms = ms) } else { tf!("Filas afectadas: {n} · {ms} ms", n = upd, ms = ms) };
+                            c.log.push((true, format!("✔ {title} — {info}")));
+                            if c.tabs.is_empty() {
+                                c.active = None;
+                            }
+                        }
                         c.running = None;
-                        c.rows.shrink_to_fit();
+                        if !c.queue.is_empty() {
+                            self.next_statement();
+                        }
                     }
                     _ => {}
                 }
@@ -930,11 +1082,10 @@ impl App {
                     ("REMARKS", t!("comentario")),
                 ];
                 let found: Vec<(usize, &str)> = pick.iter().filter_map(|(c, l)| Some((idx(c)?, *l))).collect();
-                let c = &mut self.console;
-                c.cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
-                c.rows = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
-                c.widths.clear();
-                c.info = tf!("Columnas de {tabla}: {n}", tabla = label, n = c.rows.len());
+                let rows: Vec<_> = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
+                let info = tf!("Columnas de {tabla}: {n}", tabla = label, n = rows.len());
+                let cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
+                self.console.push_tab(ResultTab { title: format!("▦ {label}"), cols, rows, widths: Vec::new(), info });
             }
         }
     }
@@ -1444,7 +1595,8 @@ impl App {
         });
         if let Some(sql) = insert {
             self.console.sql = sql;
-            self.run_sql();
+            self.console.selection = None;
+            self.run_sql(true);
         }
         if let Some(m) = want {
             self.meta(m);
@@ -1458,7 +1610,7 @@ impl App {
     }
 
     fn sql_ui(&mut self, ui: &mut Ui) {
-        let mut run = false;
+        let mut run: Option<bool> = None;
         ui.horizontal(|ui| {
             ui.strong(t!("Consola SQL"));
             match (&self.console.session, self.console.opening) {
@@ -1477,45 +1629,173 @@ impl App {
                 if self.console.session.is_some() && ui.button(t!("Desconectar")).clicked() {
                     self.disconnect();
                 }
+                let can = self.form.is_some() || self.console.session.is_some();
                 if self.console.running.is_some() {
                     if ui.button(t!("■ Cancelar")).clicked() {
                         self.cancel_sql();
                     }
-                } else if ui.add_enabled(self.form.is_some() || self.console.session.is_some(), Button::new(t!("▶ Ejecutar"))).on_hover_text("Ctrl+Enter").clicked() {
-                    run = true;
+                } else {
+                    if ui.add_enabled(can, Button::new(t!("⏩ Script"))).on_hover_text(t!("Todas las sentencias, en orden (Ctrl+Mayús+Enter)")).clicked() {
+                        run = Some(true);
+                    }
+                    if ui.add_enabled(can, Button::new(t!("▶ Ejecutar"))).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
+                        run = Some(false);
+                    }
                 }
+                if ui.selectable_label(self.console.show_history, t!("🕘 Historial")).clicked() {
+                    self.console.show_history = !self.console.show_history;
+                }
+                ui.checkbox(&mut self.console.keep_going, t!("Seguir tras un error"));
             });
         });
-        let r = ui.add(TextEdit::multiline(&mut self.console.sql).code_editor().desired_rows(4).desired_width(f32::INFINITY));
-        if r.has_focus() && ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
-            run = true;
+
+        // Editor con colores; la sentencia del cursor se resalta.
+        let editor_id = Id::unique("sql_editor");
+        if ui.memory(|m| m.has_focus(editor_id)) {
+            if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::Enter)) {
+                run = Some(true);
+            } else if ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter)) {
+                run = Some(false);
+            }
         }
-        if run {
-            self.run_sql();
+        let current = if self.console.selection.is_some() { None } else { crate::sql::at_cursor(&self.console.sql, self.console.cursor.min(self.console.sql.len())) };
+        let mut layouter = |ui: &Ui, buf: &dyn TextBuffer, wrap: f32| {
+            let mut job = highlight_job(buf.as_str(), ui.style(), current.clone());
+            job.wrap.max_width = wrap;
+            ui.fonts_mut(|f| f.layout_job(job))
+        };
+        let out = TextEdit::multiline(&mut self.console.sql).id(editor_id).code_editor().desired_rows(5).desired_width(f32::INFINITY).layouter(&mut layouter).show(ui);
+        if let Some(cr) = out.cursor_range {
+            let to_byte = |ci: usize| self.console.sql.char_indices().nth(ci).map_or(self.console.sql.len(), |(b, _)| b);
+            let (a, b) = (to_byte(cr.primary.index.0), to_byte(cr.secondary.index.0));
+            self.console.cursor = a;
+            self.console.selection = (a != b).then(|| a.min(b)..a.max(b));
         }
+        if let Some(all) = run {
+            self.run_sql(all);
+        }
+
+        // Estado y pestañas de resultados.
         ui.horizontal(|ui| {
             if let Some((_, t)) = self.console.running {
                 ui.spinner();
-                ui.label(tf!("Ejecutando… {n} filas · {s} s", n = self.console.rows.len(), s = format!("{:.1}", t.elapsed().as_secs_f32())));
+                let n = self.console.tabs.last().filter(|_| self.console.current_tab).map_or(0, |t| t.rows.len());
+                let left = self.console.queue.len();
+                let mut msg = tf!("Ejecutando… {n} filas · {s} s", n = n, s = format!("{:.1}", t.elapsed().as_secs_f32()));
+                if left > 0 {
+                    msg.push_str(&tf!(" (quedan {n})", n = left));
+                }
+                ui.label(msg);
             } else {
                 ui.weak(&self.console.info);
             }
-            if !self.console.rows.is_empty() {
-                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                    if ui.small_button(t!("Copiar como TSV")).clicked() {
-                        let t = tsv(&self.console.cols, &self.console.rows);
-                        ui.ctx().copy_text(t);
-                        self.status = t!("Resultado copiado.").into();
+        });
+        let mut close = None;
+        if !self.console.log.is_empty() || !self.console.tabs.is_empty() {
+            ScrollArea::horizontal().id_salt("pestanas").max_height(28.0).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    if !self.console.log.is_empty() {
+                        let errors = self.console.log.iter().filter(|(ok, _)| !ok).count();
+                        let label = if errors > 0 { RichText::new(tf!("Mensajes ({n} ✖)", n = errors)).color(RED) } else { RichText::new(tf!("Mensajes ({n})", n = self.console.log.len())) };
+                        if ui.selectable_label(self.console.active.is_none(), label).clicked() {
+                            self.console.active = None;
+                        }
+                    }
+                    for (i, t) in self.console.tabs.iter().enumerate() {
+                        if ui.selectable_label(self.console.active == Some(i), &t.title).on_hover_text(&t.info).clicked() {
+                            self.console.active = Some(i);
+                        }
+                        if ui.small_button("✕").clicked() {
+                            close = Some(i);
+                        }
+                        ui.add_space(4.0);
+                    }
+                });
+            });
+        }
+        if let Some(i) = close {
+            let c = &mut self.console;
+            if !(c.running.is_some() && c.current_tab && i + 1 == c.tabs.len()) {
+                c.tabs.remove(i);
+                c.active = if c.tabs.is_empty() { None } else { Some(i.min(c.tabs.len() - 1)) };
+            }
+        }
+        match self.console.active {
+            None => {
+                if let Some(e) = &self.console.error {
+                    error_box(ui, e);
+                }
+                ScrollArea::vertical().id_salt("mensajes").auto_shrink(false).show(ui, |ui| {
+                    for (ok, line) in &self.console.log {
+                        ui.colored_label(if *ok { ui.visuals().text_color() } else { RED }, RichText::new(line).monospace());
                     }
                 });
             }
-        });
-        if let Some(e) = &self.console.error {
-            error_box(ui, e);
+            Some(_) => {
+                let running = self.console.running.is_some() && self.console.current_tab && self.console.active == Some(self.console.tabs.len() - 1);
+                let mut copy = false;
+                if let Some(t) = self.console.tab() {
+                    ui.horizontal(|ui| {
+                        ui.weak(&t.info);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if !t.rows.is_empty() && ui.small_button(t!("Copiar como TSV")).clicked() {
+                                copy = true;
+                            }
+                        });
+                    });
+                    if copy {
+                        ui.ctx().copy_text(tsv(&t.cols, &t.rows));
+                    }
+                    if let Some(msg) = results_table(ui, t, running) {
+                        self.status = msg;
+                    }
+                }
+                if copy {
+                    self.status = t!("Resultado copiado.").into();
+                }
+            }
         }
-        if !self.console.cols.is_empty() {
-            if let Some(msg) = results_table(ui, &mut self.console) {
-                self.status = msg;
+    }
+
+    fn history_window(&mut self, ctx: &Context) {
+        let conn = if self.console.session_conn.is_empty() { self.selected.clone().unwrap_or_default() } else { self.console.session_conn.clone() };
+        let entries = self.history(&conn);
+        let mut open = self.console.show_history;
+        let mut pick: Option<(String, bool)> = None;
+        Window::new(t!("Historial de SQL")).open(&mut open).default_size([520.0, 420.0]).show(ctx, |ui| {
+            ui.add(TextEdit::singleline(&mut self.console.history_filter).hint_text(t!("🔎 Filtrar")).desired_width(f32::INFINITY));
+            ui.weak(t!("Clic: copiar al editor · Doble clic: ejecutar"));
+            let q = self.console.history_filter.to_lowercase();
+            let now = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+                let mut shown = 0;
+                for (t, sql) in entries.iter().rev() {
+                    if !q.is_empty() && !sql.to_lowercase().contains(&q) {
+                        continue;
+                    }
+                    shown += 1;
+                    ui.horizontal(|ui| {
+                        ui.weak(RichText::new(ago(now.saturating_sub(*t))).small());
+                        let r = ui.add(Label::new(RichText::new(short_title(sql)).monospace()).sense(Sense::click())).on_hover_text(sql);
+                        if r.double_clicked() {
+                            pick = Some((sql.clone(), true));
+                        } else if r.clicked() {
+                            pick = Some((sql.clone(), false));
+                        }
+                    });
+                }
+                if shown == 0 {
+                    ui.weak(t!("Sin entradas."));
+                }
+            });
+        });
+        self.console.show_history = open;
+        if let Some((sql, now)) = pick {
+            self.console.sql = sql;
+            self.console.selection = None;
+            self.console.cursor = 0;
+            if now {
+                self.run_sql(true);
             }
         }
     }
@@ -1751,7 +2031,7 @@ impl App {
             }
             if let Ok(sql) = std::env::var("CONECTOR_SQL") {
                 self.console.sql = sql;
-                self.run_sql();
+                self.run_sql(true);
             }
             if std::env::var_os("CONECTOR_AJUSTES").is_some() {
                 self.show_settings = true;
@@ -1789,6 +2069,53 @@ impl App {
     }
 }
 
+/// «hace 5 min» a partir de segundos.
+fn ago(secs: u64) -> String {
+    match secs {
+        0..60 => t!("ahora").to_owned(),
+        60..3600 => tf!("hace {n} min", n = secs / 60),
+        3600..86400 => tf!("hace {n} h", n = secs / 3600),
+        _ => tf!("hace {n} d", n = secs / 86400),
+    }
+}
+
+/// Colores del editor SQL; `current` = sentencia del cursor (fondo tenue).
+fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usize>>) -> text::LayoutJob {
+    use crate::sql::Tok;
+    let font = TextStyle::Monospace.resolve(style);
+    let dark = style.visuals.dark_mode;
+    let color = |t: Tok| match (t, dark) {
+        (Tok::Keyword, true) => Color32::from_rgb(110, 170, 240),
+        (Tok::Keyword, false) => Color32::from_rgb(20, 80, 200),
+        (Tok::Str, true) => Color32::from_rgb(220, 160, 120),
+        (Tok::Str, false) => Color32::from_rgb(170, 40, 30),
+        (Tok::Number, true) => Color32::from_rgb(180, 210, 160),
+        (Tok::Number, false) => Color32::from_rgb(20, 130, 80),
+        (Tok::Comment, true) => Color32::from_rgb(120, 150, 110),
+        (Tok::Comment, false) => Color32::from_rgb(90, 130, 80),
+        (Tok::Plain, _) => style.visuals.text_color(),
+    };
+    let bg = style.visuals.faint_bg_color.gamma_multiply(if dark { 2.5 } else { 1.5 });
+    let mut job = text::LayoutJob::default();
+    let cur = current.unwrap_or(0..0);
+    for (r, tok) in crate::sql::tokens(text) {
+        // Partir en los bordes de la sentencia actual para pintar su fondo.
+        let mut cuts = vec![r.start, r.end];
+        for b in [cur.start, cur.end] {
+            if b > r.start && b < r.end && text.is_char_boundary(b) {
+                cuts.push(b);
+            }
+        }
+        cuts.sort();
+        for w in cuts.windows(2) {
+            let inside = !cur.is_empty() && w[0] >= cur.start && w[1] <= cur.end;
+            let fmt = TextFormat { font_id: font.clone(), color: color(tok), background: if inside { bg } else { Color32::TRANSPARENT }, ..Default::default() };
+            job.append(&text[w[0]..w[1]], 0.0, fmt);
+        }
+    }
+    job
+}
+
 fn split_cols(m: &Msg) -> Vec<(String, String)> {
     m.fields
         .iter()
@@ -1822,10 +2149,10 @@ fn tsv(cols: &[(String, String)], rows: &[Box<[Option<Box<str>>]>]) -> String {
 }
 
 /// Tabla de resultados: cabecera + filas virtualizadas. Clic en una celda la copia.
-fn results_table(ui: &mut Ui, c: &mut Console) -> Option<String> {
+fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String> {
     let font = TextStyle::Monospace.resolve(ui.style());
     let char_w = ui.fonts_mut(|f| f.glyph_width(&font, '0'));
-    if c.widths.len() != c.cols.len() || (c.running.is_some() && c.rows.len() <= 200) {
+    if c.widths.len() != c.cols.len() || (running && c.rows.len() <= 200) {
         // Ancho por columna según la cabecera y las primeras 200 filas.
         c.widths = c
             .cols
@@ -1925,6 +2252,9 @@ impl eframe::App for App {
         }
         if self.confirm_delete {
             self.delete_window(&ctx);
+        }
+        if self.console.show_history {
+            self.history_window(&ctx);
         }
     }
 }

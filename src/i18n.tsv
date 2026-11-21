@@ -161,3 +161,18 @@ PEM, solo con certificado propio	PEM, only with your own certificate	PEM, unique
 ⚠ Sin TLS todo viaja en claro (también el token): solo en una red de confianza, VPN o túnel SSH.	⚠ Without TLS everything travels in clear text (the token too): only on a trusted network, VPN or SSH tunnel.	⚠ Sans TLS tout circule en clair (le jeton aussi) : uniquement sur un réseau de confiance, VPN ou tunnel SSH.
 Huella SHA-256: {huella}	SHA-256 fingerprint: {huella}	Empreinte SHA-256 : {huella}
 Los clientes confían en el certificado ({ruta}) o fijan su huella.	Clients trust the certificate ({ruta}) or pin its fingerprint.	Les clients font confiance au certificat ({ruta}) ou épinglent son empreinte.
+ (quedan {n})	 ({n} left)	 (reste {n})
+Clic: copiar al editor · Doble clic: ejecutar	Click: copy to the editor · Double-click: run	Clic : copier dans l'éditeur · Double-clic : exécuter
+Historial de SQL	SQL history	Historique SQL
+La selección o la sentencia del cursor (Ctrl+Enter)	The selection or the statement at the cursor (Ctrl+Enter)	La sélection ou l'instruction sous le curseur (Ctrl+Entrée)
+Mensajes ({n} ✖)	Messages ({n} ✖)	Messages ({n} ✖)
+Mensajes ({n})	Messages ({n})	Messages ({n})
+Seguir tras un error	Continue after an error	Continuer après une erreur
+Sin entradas.	No entries.	Aucune entrée.
+Todas las sentencias, en orden (Ctrl+Mayús+Enter)	All statements, in order (Ctrl+Shift+Enter)	Toutes les instructions, dans l'ordre (Ctrl+Maj+Entrée)
+ahora	now	maintenant
+hace {n} d	{n} d ago	il y a {n} j
+hace {n} h	{n} h ago	il y a {n} h
+hace {n} min	{n} min ago	il y a {n} min
+⏩ Script	⏩ Script	⏩ Script
+🕘 Historial	🕘 History	🕘 Historique
