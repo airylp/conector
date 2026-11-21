@@ -9,6 +9,11 @@
 //!   POST /v1/conexiones/{id}/probar          prueba la conexión
 //!   POST /v1/conexiones/{id}/consulta[?max=N]  cuerpo = SQL → columnas y filas
 //!   GET  /v1/cambios?firma=F                 espera (≤25 s) a que cambie el catálogo
+//!   GET  /v1/eventos                         flujo SSE: un evento por cada cambio del
+//!                                            catálogo (cambiadas, nuevas, borradas)
+//!
+//! Las consultas reutilizan sesiones abiertas (máx. `POOL_PER_CONN` libres por
+//! conexión; se cierran tras `POOL_IDLE` sin uso).
 //!
 //! Con TLS (por defecto, ver `tls`) o, si se desactiva, HTTP en claro (solo
 //! para una red de confianza, VPN o túnel SSH). Las contraseñas no salen por
@@ -28,6 +33,19 @@ use std::time::{Duration, Instant};
 
 const MAX_BODY: usize = 1 << 20;
 const MAX_CLIENTS: usize = 32;
+/// Sesiones libres que se guardan por conexión.
+const POOL_PER_CONN: usize = 4;
+/// Una sesión libre más tiempo que esto se cierra.
+const POOL_IDLE: Duration = Duration::from_secs(300);
+
+/// Sesiones abiertas y libres, por conexión (id + huella de sus datos: si la
+/// conexión cambia en el catálogo, sus sesiones viejas no se reutilizan).
+#[derive(Default)]
+struct Pool {
+    idle: HashMap<String, Vec<(String, Instant)>>,
+}
+
+type SharedPool = Arc<Mutex<Pool>>;
 
 #[derive(Clone)]
 pub struct Config {
@@ -48,6 +66,8 @@ struct Hub {
     java: Handle,
     routes: Routes,
     clients: AtomicUsize,
+    pool: SharedPool,
+    stop: Arc<AtomicBool>,
 }
 
 /// Servicio en marcha; se para al soltarlo.
@@ -72,10 +92,38 @@ pub fn start(cfg: Config) -> Result<Server, String> {
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
     let stop = Arc::new(AtomicBool::new(false));
     let routes: Routes = Arc::default();
+    let pool: SharedPool = Arc::default();
     let bridge = Bridge::new(cfg.java.clone(), Arc::new(|| {}));
-    let hub = Arc::new(Hub { java: bridge.handle(), cfg, routes: routes.clone(), clients: AtomicUsize::new(0) });
+    let hub = Arc::new(Hub { java: bridge.handle(), cfg, routes: routes.clone(), clients: AtomicUsize::new(0), pool: pool.clone(), stop: stop.clone() });
     let st = stop.clone();
-    std::thread::Builder::new().name("servicio-java".into()).spawn(move || route(bridge, routes, st)).map_err(|e| e.to_string())?;
+    std::thread::Builder::new().name("servicio-java".into()).spawn(move || route(bridge, routes, pool, st)).map_err(|e| e.to_string())?;
+    // Cierra las sesiones que llevan mucho sin usarse.
+    let h = hub.clone();
+    std::thread::Builder::new()
+        .name("servicio-limpieza".into())
+        .spawn(move || {
+            while !h.stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_secs(5));
+                let old: Vec<String> = {
+                    let mut p = h.pool.lock().unwrap();
+                    let mut out = Vec::new();
+                    for list in p.idle.values_mut() {
+                        list.retain(|(s, t)| {
+                            let keep = t.elapsed() < POOL_IDLE;
+                            if !keep {
+                                out.push(s.clone());
+                            }
+                            keep
+                        });
+                    }
+                    out
+                };
+                for s in old {
+                    h.java.send("cerrar", &[("sesion", &s)]);
+                }
+            }
+        })
+        .map_err(|e| e.to_string())?;
     let st = stop.clone();
     std::thread::Builder::new()
         .name("servicio".into())
@@ -120,7 +168,7 @@ pub fn start(cfg: Config) -> Result<Server, String> {
 }
 
 /// Reparte las respuestas de Java a la petición HTTP que las espera.
-fn route(bridge: Bridge, routes: Routes, stop: Arc<AtomicBool>) {
+fn route(bridge: Bridge, routes: Routes, pool: SharedPool, stop: Arc<AtomicBool>) {
     while !stop.load(Ordering::Relaxed) {
         let Ok(ev) = bridge.rx.recv_timeout(Duration::from_millis(500)) else { continue };
         let mut r = routes.lock().unwrap();
@@ -136,6 +184,8 @@ fn route(bridge: Bridge, routes: Routes, stop: Arc<AtomicBool>) {
                 }
             }
             Event::Exited(log) => {
+                // Las sesiones murieron con Java.
+                pool.lock().unwrap().idle.clear();
                 for (_, tx) in r.drain() {
                     let _ = tx.send(Err(format!("Java se cerró: {log}")));
                 }
@@ -166,6 +216,41 @@ impl Hub {
         let r = rx.recv_timeout(limit).map_err(|_| format!("sin respuesta tras {} s", limit.as_secs())).and_then(|r| r);
         self.done(id);
         r
+    }
+
+    /// Una sesión de la conexión: libre del pool o recién abierta.
+    /// Devuelve (sesión, clave del pool, ¿reutilizada?).
+    fn take_session(&self, c: &Conn) -> Result<(String, String, bool), String> {
+        use std::hash::{Hash, Hasher};
+        let fields = self.fields(c).map_err(|e| err_json(&e))?;
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        fields.hash(&mut h);
+        let key = format!("{}|{:x}", c.id, h.finish());
+        if let Some((s, _)) = self.pool.lock().unwrap().idle.get_mut(&key).and_then(|l| l.pop()) {
+            return Ok((s, key, true));
+        }
+        match self.ask_one("abrir", &fields, Duration::from_secs(c.timeout as u64 + 30)) {
+            Ok(m) if &*m.kind == "ok" => Ok((m.get("sesion").unwrap_or("").to_owned(), key, false)),
+            Ok(m) => Err(fail_json(&m)),
+            Err(e) => Err(err_json(&e)),
+        }
+    }
+
+    /// Devuelve la sesión al pool (o la cierra si ya hay bastantes libres).
+    fn give_back(&self, key: String, session: String) {
+        let extra = {
+            let mut p = self.pool.lock().unwrap();
+            let list = p.idle.entry(key).or_default();
+            list.push((session, Instant::now()));
+            if list.len() > POOL_PER_CONN { Some(list.remove(0).0) } else { None }
+        };
+        if let Some(s) = extra {
+            self.java.send("cerrar", &[("sesion", &s)]);
+        }
+    }
+
+    fn idle_sessions(&self) -> usize {
+        self.pool.lock().unwrap().idle.values().map(Vec::len).sum()
     }
 
     fn catalog(&self) -> Catalog {
@@ -282,9 +367,48 @@ fn handle<S: Read + Write>(hub: &Hub, stream: &mut S) {
     let (code, body) = match read_request(stream) {
         Err((c, e)) => (c, err_json(&e)),
         Ok(req) if !req.auth.as_deref().is_some_and(|t| same(t, hub.cfg.token.trim())) => (401, err_json("falta el token o no es válido (Authorization: Bearer …)")),
+        Ok(req) if req.method == "GET" && req.path.trim_end_matches('/') == "/v1/eventos" => return events(hub, stream),
         Ok(req) => dispatch(hub, &req),
     };
     let _ = respond(stream, code, &body);
+}
+
+/// Flujo SSE: avisa de cada cambio del catálogo hasta que el cliente se va.
+fn events<S: Write>(hub: &Hub, stream: &mut S) {
+    let cat = hub.catalog();
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream; charset=utf-8\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n";
+    let send = |s: &mut S, text: &str| s.write_all(text.as_bytes()).and_then(|_| s.flush());
+    let mut before = cat.stamps();
+    let hello = format!("event: hola\ndata: {{\"firma\":\"{:x}\",\"conexiones\":{}}}\n\n", cat.signature(), before.len());
+    if send(stream, head).and_then(|_| send(stream, &hello)).is_err() {
+        return;
+    }
+    let mut last = Instant::now();
+    while !hub.stop.load(Ordering::Relaxed) {
+        std::thread::sleep(Duration::from_millis(500));
+        let now = cat.stamps();
+        if now != before {
+            let list = |v: Vec<&String>| v.into_iter().map(|s| js(s)).collect::<Vec<_>>().join(",");
+            let changed = list(now.iter().filter(|(k, v)| before.get(*k).is_some_and(|b| b != *v)).map(|(k, _)| k).collect());
+            let added = list(now.keys().filter(|k| !before.contains_key(*k)).collect());
+            let removed = list(before.keys().filter(|k| !now.contains_key(*k)).collect());
+            let ev = format!(
+                "event: cambio\ndata: {{\"firma\":\"{:x}\",\"cambiadas\":[{changed}],\"nuevas\":[{added}],\"borradas\":[{removed}]}}\n\n",
+                cat.signature()
+            );
+            if send(stream, &ev).is_err() {
+                return;
+            }
+            before = now;
+            last = Instant::now();
+        } else if last.elapsed() > Duration::from_secs(15) {
+            // Latido: mantiene viva la conexión y detecta clientes que se fueron.
+            if send(stream, ": latido\n\n").is_err() {
+                return;
+            }
+            last = Instant::now();
+        }
+    }
 }
 
 fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
@@ -293,7 +417,7 @@ fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
         ("GET", ["v1", "estado"]) => {
             let cat = hub.catalog();
             let n = cat.load().len();
-            (200, format!("{{\"version\":{},\"conexiones\":{n},\"firma\":\"{:x}\"}}", js(env!("CARGO_PKG_VERSION")), cat.signature()))
+            (200, format!("{{\"version\":{},\"conexiones\":{n},\"firma\":\"{:x}\",\"sesiones_libres\":{}}}", js(env!("CARGO_PKG_VERSION")), cat.signature(), hub.idle_sessions()))
         }
         ("GET", ["v1", "conexiones"]) => {
             let list: Vec<String> = hub.catalog().load().iter().map(|e| conn_json(&e.conn, None)).collect();
@@ -348,21 +472,45 @@ fn dispatch(hub: &Hub, req: &Request) -> (u16, String) {
     }
 }
 
-/// Abre una sesión, ejecuta y la cierra; las filas se van escribiendo en el JSON.
+/// Ejecuta en una sesión del pool; si la reutilizada ya no vale (Java se
+/// reinició), lo intenta una vez con una nueva.
 fn query(hub: &Hub, c: &Conn, sql: &str, max: u32) -> String {
-    let open = match hub.fields(c).and_then(|f| hub.ask_one("abrir", &f, Duration::from_secs(c.timeout as u64 + 30))) {
-        Ok(m) if &*m.kind == "ok" => m,
-        Ok(m) => return fail_json(&m),
-        Err(e) => return err_json(&e),
-    };
-    let session = open.get("sesion").unwrap_or("").to_owned();
-    let (id, rx) = hub.ask("consulta", &[("sesion".into(), session.clone()), ("sql".into(), sql.into()), ("max".into(), max.to_string())]);
+    for attempt in 0..2 {
+        let (session, key, reused) = match hub.take_session(c) {
+            Ok(x) => x,
+            Err(json) => return json,
+        };
+        match run_query(hub, &session, sql, max) {
+            Ok(json) => {
+                hub.give_back(key, session);
+                return json;
+            }
+            Err((json, broken)) => {
+                if broken {
+                    hub.java.send("cerrar", &[("sesion", &session)]);
+                    if reused && attempt == 0 {
+                        continue;
+                    }
+                } else {
+                    // Error de SQL: la sesión sigue sirviendo.
+                    hub.give_back(key, session);
+                }
+                return json;
+            }
+        }
+    }
+    err_json("no se pudo abrir una sesión")
+}
+
+/// Las filas se van escribiendo en el JSON. Error: (json, ¿sesión inservible?).
+fn run_query(hub: &Hub, session: &str, sql: &str, max: u32) -> Result<String, (String, bool)> {
+    let (id, rx) = hub.ask("consulta", &[("sesion".into(), session.to_owned()), ("sql".into(), sql.into()), ("max".into(), max.to_string())]);
     let mut out = String::from("{\"ok\":true");
     let mut rows = 0usize;
     let result = loop {
         match rx.recv_timeout(Duration::from_secs(300)) {
-            Err(_) => break Err("sin respuesta tras 300 s".to_owned()),
-            Ok(Err(e)) => break Err(e),
+            Err(_) => break Err((err_json("sin respuesta tras 300 s"), true)),
+            Ok(Err(e)) => break Err((err_json(&e), true)),
             Ok(Ok(m)) => match &*m.kind {
                 "columnas" => {
                     let cols: Vec<String> = m
@@ -402,18 +550,17 @@ fn query(hub: &Hub, c: &Conn, sql: &str, max: u32) -> String {
                     ));
                     break Ok(());
                 }
-                "error" => break Err(fail_json(&m)),
+                "error" => {
+                    // Sesión perdida o conexión caída (SQLState 08…): no reutilizar.
+                    let broken = m.get("mensaje").is_some_and(|x| x.contains("la sesión no existe")) || m.get("sqlstate").is_some_and(|x| x.starts_with("08"));
+                    break Err((fail_json(&m), broken));
+                }
                 _ => {}
             },
         }
     };
     hub.done(id);
-    let _ = hub.java.send("cerrar", &[("sesion", &session)]);
-    match result {
-        Ok(()) => out,
-        Err(e) if e.starts_with('{') => e,
-        Err(e) => err_json(&e),
-    }
+    result.map(|_| out)
 }
 
 // ---------- JSON ----------

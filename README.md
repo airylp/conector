@@ -73,6 +73,13 @@ Ajustes → Servicio de red, o `conector --servir`. HTTPS + JSON con token
 | POST | `/v1/conexiones/{id}/probar` | prueba la conexión |
 | POST | `/v1/conexiones/{id}/consulta[?max=N]` | cuerpo = SQL → columnas y filas |
 | GET | `/v1/cambios?firma=F` | espera (≤25 s) a que cambie el catálogo |
+| GET | `/v1/eventos` | flujo SSE: un evento `cambio` con `cambiadas`, `nuevas` y `borradas` |
+
+Las consultas reutilizan sesiones abiertas (hasta 4 libres por conexión, se
+cierran tras 5 min sin uso): la primera abre la conexión y las siguientes van
+directas. Clientes de ejemplo listos para usar, solo con la biblioteca
+estándar: [`ejemplos/cliente.py`](ejemplos/cliente.py) (Python 3.8+) y
+[`ejemplos/Cliente.java`](ejemplos/Cliente.java) (Java 11+, `java Cliente.java lista`).
 
     curl --cacert servicio-cert.pem -H "Authorization: Bearer $TOKEN" https://equipo:7470/v1/conexiones
     curl --cacert servicio-cert.pem -XPOST -H "Authorization: Bearer $TOKEN" \

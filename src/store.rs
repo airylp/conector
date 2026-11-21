@@ -342,6 +342,24 @@ impl Catalog {
         h.finish()
     }
 
+    /// Tamaño y fecha de cada conexión (para saber qué cambió).
+    pub fn stamps(&self) -> BTreeMap<String, (u64, Option<SystemTime>)> {
+        std::fs::read_dir(&self.dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .filter_map(|e| {
+                let p = e.path();
+                if p.extension()? != EXT {
+                    return None;
+                }
+                let id = p.file_stem()?.to_str()?.to_owned();
+                let m = e.metadata().ok()?;
+                Some((id, (m.len(), m.modified().ok())))
+            })
+            .collect()
+    }
+
     /// Id libre para un nombre nuevo.
     pub fn free_id(&self, name: &str) -> String {
         let base = slug(name);
