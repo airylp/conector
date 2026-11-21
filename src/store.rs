@@ -33,6 +33,12 @@ pub struct Conn {
     pub notes: String,
     /// Contraseña compartida cifrada con la frase común (`x1:…`), o vacía.
     pub secret: String,
+    /// Túnel SSH: `usuario@bastión[:puerto]` (vacío = sin túnel).
+    pub ssh: String,
+    pub ssh_key: String,
+    /// Destino visto desde el bastión (`host:puerto`); vacío = el de la URL.
+    pub ssh_dest: String,
+    pub ssh_opts: String,
 }
 
 impl Conn {
@@ -61,6 +67,10 @@ impl Conn {
         kv("timeout", &self.timeout.to_string());
         kv("notas", &self.notes);
         kv("clave_cifrada", &self.secret);
+        kv("ssh", &self.ssh);
+        kv("ssh_clave", &self.ssh_key);
+        kv("ssh_destino", &self.ssh_dest);
+        kv("ssh_opciones", &self.ssh_opts);
         for (k, v) in &self.props {
             s.push_str("prop.");
             s.push_str(&esc(k).replace('=', "\\="));
@@ -90,6 +100,10 @@ impl Conn {
                 "timeout" => c.timeout = v.trim().parse().unwrap_or(15),
                 "notas" => c.notes = v,
                 "clave_cifrada" => c.secret = v,
+                "ssh" => c.ssh = v,
+                "ssh_clave" => c.ssh_key = v,
+                "ssh_destino" => c.ssh_dest = v,
+                "ssh_opciones" => c.ssh_opts = v,
                 k => {
                     if let Some(p) = k.strip_prefix("prop.") {
                         c.props.push((unesc(p), v));
@@ -646,6 +660,10 @@ mod tests {
             timeout: 7,
             notes: "línea 1\nlínea 2\\".into(),
             secret: "x1:abc=".into(),
+            ssh: "yo@bastion:2222".into(),
+            ssh_key: "~/.ssh/id_ed25519".into(),
+            ssh_dest: "db.interna:5432".into(),
+            ssh_opts: "-o ProxyJump=otro".into(),
         };
         assert_eq!(Conn::from_text("x", &c.to_text()), c);
     }

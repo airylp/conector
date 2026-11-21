@@ -209,3 +209,10 @@ esquema.tabla (ya existente)	schema.table (existing)	schéma.table (existante)
 ⬇ Exportar…	⬇ Export…	⬇ Exporter…
 Variables de este equipo	Variables on this computer	Variables de cet ordinateur
 NOMBRE=valor, una por línea. En el catálogo compartido usa ${VAR}, ${env:VAR} o ${VAR:-x} (x = valor por defecto) en URL, usuario, jar o propiedades: cada equipo pone sus valores.	NAME=value, one per line. In the shared catalog use ${VAR}, ${env:VAR} or ${VAR:-x} (x = default value) in URL, user, jar or properties: each computer sets its own values.	NOM=valeur, une par ligne. Dans le catalogue partagé, utilisez ${VAR}, ${env:VAR} ou ${VAR:-x} (x = valeur par défaut) dans l'URL, l'utilisateur, les jar ou les propriétés : chaque ordinateur met ses valeurs.
+Túnel SSH	SSH tunnel	Tunnel SSH
+Usa el ssh del sistema (claves, agente, ~/.ssh/config). Nunca pide contraseña: hace falta una clave.	Uses the system ssh (keys, agent, ~/.ssh/config). It never asks for a password: a key is required.	Utilise le ssh du système (clés, agent, ~/.ssh/config). Ne demande jamais de mot de passe : une clé est nécessaire.
+usuario@bastión[:puerto] (vacío = sin túnel)	user@bastion[:port] (empty = no tunnel)	utilisateur@bastion[:port] (vide = sans tunnel)
+destino host:puerto (vacío = el de la URL)	destination host:port (empty = the URL one)	destination hôte:port (vide = celle de l'URL)
+clave privada (vacío = agente o ~/.ssh)	private key (empty = agent or ~/.ssh)	clé privée (vide = agent ou ~/.ssh)
+opciones de ssh, p. ej. -o ProxyJump=otro	ssh options, e.g. -o ProxyJump=other	options ssh, p. ex. -o ProxyJump=autre
+🔐 {n} túneles SSH	🔐 {n} SSH tunnels	🔐 {n} tunnels SSH

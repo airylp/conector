@@ -19,6 +19,7 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 /// Generado con `scripts/compilar-auxiliar.sh` (el test `auxiliar_al_dia` lo vigila).
 const JAR: &[u8] = include_bytes!("java/auxiliar.jar");
@@ -38,6 +39,8 @@ pub enum Event {
 
 enum Cmd {
     Send(u64, String),
+    /// La orden `id` no se pudo enviar (p. ej. falló su túnel SSH).
+    Fail(u64, String),
     Restart,
     Stop,
 }
@@ -65,9 +68,40 @@ pub struct Handle {
 
 impl Handle {
     /// Envía una orden; devuelve su id (las respuestas llevan el mismo).
+    /// Si lleva `ssh=`, primero abre (o reutiliza) el túnel en otro hilo y
+    /// cambia la URL por la local; si el túnel falla, llega `Event::Failed`.
     pub fn send(&self, cmd: &str, fields: &[(&str, &str)]) -> u64 {
         let id = self.next.fetch_add(1, Ordering::Relaxed);
-        let _ = self.tx.send(Cmd::Send(id, proto::line(cmd, id, fields)));
+        let get = |k: &str| fields.iter().find(|(a, _)| *a == k).map(|(_, v)| v.to_string()).unwrap_or_default();
+        let jump = get("ssh");
+        if jump.is_empty() {
+            let _ = self.tx.send(Cmd::Send(id, proto::line(cmd, id, fields)));
+            return id;
+        }
+        let spec = crate::tunnel::Spec { jump, key: get("ssh_clave"), dest: get("ssh_destino"), opts: get("ssh_opciones") };
+        let timeout = Duration::from_secs(get("timeout").parse::<u64>().unwrap_or(15).clamp(5, 120));
+        let mut rest: Vec<(String, String)> = fields.iter().filter(|(k, _)| !k.starts_with("ssh")).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let (tx, cmd) = (self.tx.clone(), cmd.to_owned());
+        std::thread::spawn(move || {
+            let url = rest.iter().find(|(k, _)| k == "url").map(|(_, v)| v.clone()).unwrap_or_default();
+            let r = crate::tunnel::rewrite(&url, &spec.dest, 0)
+                .and_then(|(_, target)| crate::tunnel::ensure(&spec, &target, timeout))
+                .and_then(|port| crate::tunnel::rewrite(&url, &spec.dest, port));
+            match r {
+                Ok((local_url, _)) => {
+                    for (k, v) in &mut rest {
+                        if k == "url" {
+                            *v = local_url.clone();
+                        }
+                    }
+                    let refs: Vec<(&str, &str)> = rest.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+                    let _ = tx.send(Cmd::Send(id, proto::line(&cmd, id, &refs)));
+                }
+                Err(e) => {
+                    let _ = tx.send(Cmd::Fail(id, e));
+                }
+            }
+        });
         id
     }
 
@@ -144,6 +178,10 @@ fn writer(cfg: Config, rx: Receiver<Cmd>, ev: Sender<Event>, wake: Waker, runnin
         match cmd {
             Cmd::Stop => break,
             Cmd::Restart => stop(&mut proc, false),
+            Cmd::Fail(id, e) => {
+                let _ = ev.send(Event::Failed(id, e));
+                wake();
+            }
             Cmd::Send(id, line) => {
                 if proc.as_mut().is_some_and(|p| !matches!(p.child.try_wait(), Ok(None))) {
                     proc = None; // murió; se arranca otro
@@ -260,6 +298,13 @@ pub fn conn_fields(c: &crate::store::Conn, password: &str, catalog: &Path) -> Re
     }
     for (k, v) in &c.props {
         f.push((format!("prop.{k}"), x(v)?));
+    }
+    // Túnel SSH: lo abre `Handle::send` antes de mandar la orden (ver `tunnel`).
+    if !c.ssh.trim().is_empty() {
+        f.push(("ssh".into(), x(c.ssh.trim())?));
+        f.push(("ssh_clave".into(), x(c.ssh_key.trim())?));
+        f.push(("ssh_destino".into(), x(c.ssh_dest.trim())?));
+        f.push(("ssh_opciones".into(), x(c.ssh_opts.trim())?));
     }
     Ok(f)
 }

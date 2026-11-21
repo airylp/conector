@@ -14,6 +14,7 @@ mod server;
 mod sql;
 mod store;
 mod tls;
+mod tunnel;
 
 use std::process::ExitCode;
 
@@ -276,6 +277,7 @@ fn cli_test(id: &str) -> ExitCode {
         let left = limit.saturating_sub(start.elapsed());
         match b.rx.recv_timeout(left) {
             Ok(bridge::Event::Msg(m)) if m.id == req => {
+                tunnel::close_all();
                 if &*m.kind == "ok" {
                     println!("OK\t{}", e.conn.name);
                     for (k, v) in m.pairs() {
@@ -290,6 +292,7 @@ fn cli_test(id: &str) -> ExitCode {
                 return ExitCode::FAILURE;
             }
             Ok(bridge::Event::Failed(_, err)) => {
+                tunnel::close_all();
                 println!("ERROR\t{}\nmensaje\t{err}", e.conn.name);
                 return ExitCode::FAILURE;
             }

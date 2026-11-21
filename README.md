@@ -26,9 +26,38 @@ portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
 
 En la interfaz: lista agrupada con filtro, plantillas (PostgreSQL, MySQL,
 MariaDB, Oracle, SQL Server, DB2, Firebird, H2, SQLite), descarga del driver
-desde Maven Central, prueba con metadatos y errores con SQLState y causas,
-consola SQL (Ctrl+Enter, cancelar) y explorador de esquemas → tablas →
-columnas. Español, inglés y francés.
+desde Maven Central, prueba con metadatos y errores con SQLState y causas, y
+explorador de esquemas → tablas → columnas. Español, inglés y francés.
+
+### Consola SQL
+
+- **Ctrl+Enter** ejecuta la selección o la sentencia del cursor (resaltada);
+  **Ctrl+Mayús+Enter** / «⏩ Script», todas en orden. Separa por `;`, `/`
+  (Oracle) o `GO` (SQL Server) respetando cadenas, comentarios, `$$` de
+  PostgreSQL y bloques PL/SQL. Se detiene en el primer error (o sigue, si se marca).
+- Un resultado por pestaña y un resumen en «Mensajes»; colores de sintaxis.
+- Historial por conexión (🕘, solo en este equipo, 500 entradas).
+- **Exportar** (⬇ en cada resultado) a CSV, JSON, Excel (.xlsx) o INSERT:
+  lo cargado o *todo*, volviendo a ejecutar la consulta sin límite y escribiendo
+  fila a fila (probado con 200 000 filas sin subir la memoria).
+- **Importar CSV** (⬆, o clic derecho en una tabla del explorador): detecta el
+  separador, vista previa, columnas editables, lotes de 500 filas en
+  transacción con conversión al tipo de cada columna.
+
+### Variables por equipo
+
+En Ajustes → «Variables de este equipo» (`NOMBRE=valor`). En el catálogo
+compartido, `${VAR}`, `${env:VAR}` o `${VAR:-por defecto}` en URL, usuario, jar,
+propiedades y túnel: la misma conexión sirve en cada equipo con sus valores.
+El formulario muestra cómo queda la URL en este equipo.
+
+### Túneles SSH
+
+Campo «Túnel SSH» de la conexión: `usuario@bastión[:puerto]`, clave privada
+(opcional: si no, agente o `~/.ssh`), destino `host:puerto` visto desde el
+bastión (vacío = el de la URL) y opciones de ssh (`-o ProxyJump=…`). Usa el
+`ssh` del sistema (OpenSSH, también en Windows 10+), siempre sin pedir
+contraseña. El túnel se reutiliza mientras viva y se cierra al salir.
 
 ## Catálogo compartible
 
@@ -95,6 +124,6 @@ confianza).
 
 ## Desarrollo
 
-    cargo test --release                       # 18 tests
+    cargo test --release                       # 28 tests
     cargo test --release descargas -- --ignored  # descargas reales (red)
     scripts/compilar-auxiliar.sh               # tras cambiar ConectorHelper.java

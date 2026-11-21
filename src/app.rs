@@ -1965,6 +1965,22 @@ impl App {
                 });
                 ui.end_row();
             }
+            ui.label(t!("Túnel SSH")).on_hover_text(t!("Usa el ssh del sistema (claves, agente, ~/.ssh/config). Nunca pide contraseña: hace falta una clave."));
+            ui.horizontal(|ui| {
+                ui.add(TextEdit::singleline(&mut f.conn.ssh).hint_text(t!("usuario@bastión[:puerto] (vacío = sin túnel)")).desired_width((w * 0.5).max(160.0)));
+                if !f.conn.ssh.trim().is_empty() {
+                    ui.add(TextEdit::singleline(&mut f.conn.ssh_dest).hint_text(t!("destino host:puerto (vacío = el de la URL)")).desired_width((w * 0.5 - 8.0).max(140.0)));
+                }
+            });
+            ui.end_row();
+            if !f.conn.ssh.trim().is_empty() {
+                ui.label("");
+                ui.horizontal(|ui| {
+                    ui.add(TextEdit::singleline(&mut f.conn.ssh_key).hint_text(t!("clave privada (vacío = agente o ~/.ssh)")).desired_width((w * 0.5).max(160.0)));
+                    ui.add(TextEdit::singleline(&mut f.conn.ssh_opts).hint_text(t!("opciones de ssh, p. ej. -o ProxyJump=otro")).desired_width((w * 0.5 - 8.0).max(140.0)));
+                });
+                ui.end_row();
+            }
             ui.label(t!("Propiedades"));
             ui.add(TextEdit::multiline(&mut f.props).font(TextStyle::Monospace).hint_text(t!("clave=valor, una por línea")).desired_rows(2).desired_width(w));
             ui.end_row();
@@ -2529,6 +2545,11 @@ impl App {
             if self.key.is_some() {
                 ui.small("🔓");
             }
+            let tunnels = crate::tunnel::open_count();
+            if tunnels > 0 {
+                ui.separator();
+                ui.small(tf!("🔐 {n} túneles SSH", n = tunnels));
+            }
             match (&self.server, &self.server_err) {
                 (Some(s), _) => {
                     ui.separator();
@@ -2801,6 +2822,10 @@ fn boxed(ui: &mut Ui, w: f32, h: f32, widget: impl Widget) -> Response {
 }
 
 impl eframe::App for App {
+    fn on_exit(&mut self) {
+        crate::tunnel::close_all();
+    }
+
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.poll_bridge();
