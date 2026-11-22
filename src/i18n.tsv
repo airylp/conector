@@ -271,4 +271,11 @@ Base (ruta o mem:nombre)	Database (path or mem:name)	Base (chemin ou mem:nom)
 Ruta de la base	Database path	Chemin de la base
 URL con formato especial: edítala directamente.	URL in a special format: edit it directly.	URL au format spécial : modifiez-la directement.
 Mostrar u ocultar la lista de conexiones (Ctrl+B)	Show or hide the connection list (Ctrl+B)	Afficher ou masquer la liste des connexions (Ctrl+B)
-Mostrar u ocultar los datos de la conexión; oculto, el explorador y la consola ocupan todo (Ctrl+Mayús+B)	Show or hide the connection details; when hidden, the explorer and console fill the window (Ctrl+Shift+B)	Afficher ou masquer les détails de la connexion ; masqués, l’explorateur et la console occupent tout (Ctrl+Maj+B)
+Mostrar u ocultar la ventana con los datos de la conexión (Ctrl+Mayús+B)	Show or hide the connection details window (Ctrl+Shift+B)	Afficher ou masquer la fenêtre des détails de la connexion (Ctrl+Maj+B)
+Conexión	Connection	Connexion
+Conexión: {nombre}	Connection: {nombre}	Connexion : {nombre}
+No se pudo renombrar el archivo: {e}	Could not rename the file: {e}	Impossible de renommer le fichier : {e}
+Renombrar {n} archivos .conexion como sus conexiones	Rename {n} .conexion files after their connections	Renommer {n} fichiers .conexion comme leurs connexions
+Cada archivo pasa a llamarse como la conexión en la lista	Each file gets the name the connection has in the list	Chaque fichier prend le nom de la connexion dans la liste
+Renombrados {n}; fallaron {m}.	Renamed {n}; {m} failed.	{n} renommés ; {m} en échec.
+Renombrados {n} archivos.	Renamed {n} files.	{n} fichiers renommés.

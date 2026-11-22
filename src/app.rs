@@ -627,6 +627,7 @@ impl App {
         nf.conn = c;
         self.selected = Some(nf.conn.id.clone());
         self.form = Some(nf);
+        self.show_form = true;
         self.test = TestState::Idle;
     }
 
@@ -638,8 +639,19 @@ impl App {
             return;
         }
         c.name = c.name.trim().into();
-        if f.mtime.is_none() && self.catalog.path_of(&c.id).exists() {
+        // El archivo se llama como la conexión: nueva → nombre libre; renombrada → se renombra el archivo.
+        let mut renamed_from = None;
+        if f.mtime.is_none() {
             c.id = self.catalog.free_id(&c.name);
+        } else if c.id != store::file_id(&c.name) {
+            let new_id = self.catalog.free_id_for(&c.name, Some(&c.id));
+            if new_id != c.id {
+                if let Err(e) = self.catalog.rename(&c.id, &new_id) {
+                    self.status = tf!("No se pudo renombrar el archivo: {e}", e = e);
+                    return;
+                }
+                renamed_from = Some(std::mem::replace(&mut c.id, new_id));
+            }
         }
         // Contraseña: compartida cifrada, local o ninguna.
         let local = Secrets::key(&self.catalog.dir, &c.id);
@@ -666,7 +678,27 @@ impl App {
             }
         };
         let expected = if f.force { None } else { Some(f.mtime.unwrap_or(None)) };
-        match self.catalog.save(&c, expected) {
+        let result = self.catalog.save(&c, expected);
+        if let Some(old) = &renamed_from {
+            match &result {
+                Ok(_) => {
+                    // Lo que iba con el nombre viejo: contraseña local, historial y consola.
+                    let _ = self.secrets.set(Secrets::key(&self.catalog.dir, old), None);
+                    if let (Some(a), Some(b)) = (self.history_path(old), self.history_path(&c.id)) {
+                        let _ = std::fs::rename(a, b);
+                    }
+                    if self.console.session_conn == *old {
+                        self.console.session_conn = c.id.clone();
+                    }
+                }
+                // Si no se pudo guardar, el archivo vuelve a su nombre.
+                Err(_) => {
+                    let _ = self.catalog.rename(&c.id, old);
+                }
+            }
+        }
+        let Some(f) = &mut self.form else { return };
+        match result {
             Ok(m) => {
                 if let Err(e) = self.secrets.set(local, local_pass) {
                     self.status = tf!("Guardada, pero no la contraseña: {e}", e = e);
@@ -692,6 +724,46 @@ impl App {
             }
             Err(SaveError::Io(e)) => self.status = tf!("No se pudo guardar: {e}", e = e),
         }
+    }
+
+    /// Renombra cada `.conexion` como su conexión (lleva consigo contraseña local e historial).
+    fn rename_all_files(&mut self) {
+        let dirty = self.form.as_ref().is_some_and(|f| f.dirty());
+        let (mut done, mut failed) = (0, 0);
+        let entries: Vec<(String, String)> = self.entries.iter().map(|e| (e.conn.id.clone(), e.conn.name.clone())).collect();
+        for (id, name) in entries {
+            if id == store::file_id(&name) || (dirty && self.selected.as_deref() == Some(id.as_str())) {
+                continue;
+            }
+            let new_id = self.catalog.free_id_for(&name, Some(&id));
+            if new_id == id {
+                continue;
+            }
+            if self.catalog.rename(&id, &new_id).is_err() {
+                failed += 1;
+                continue;
+            }
+            done += 1;
+            let old_key = Secrets::key(&self.catalog.dir, &id);
+            if let Some(p) = self.secrets.get(&old_key).map(str::to_owned) {
+                let _ = self.secrets.set(Secrets::key(&self.catalog.dir, &new_id), Some(p));
+                let _ = self.secrets.set(old_key, None);
+            }
+            if let (Some(a), Some(b)) = (self.history_path(&id), self.history_path(&new_id)) {
+                let _ = std::fs::rename(a, b);
+            }
+            if self.console.session_conn == id {
+                self.console.session_conn = new_id.clone();
+            }
+            if self.selected.as_deref() == Some(id.as_str()) {
+                self.selected = Some(new_id.clone());
+            }
+        }
+        self.reload();
+        if let Some(id) = self.selected.clone().filter(|_| !dirty) {
+            self.select(id);
+        }
+        self.status = if failed > 0 { tf!("Renombrados {n}; fallaron {m}.", n = done, m = failed) } else { tf!("Renombrados {n} archivos.", n = done) };
     }
 
     fn delete(&mut self) {
@@ -1829,7 +1901,7 @@ impl App {
             if ui.selectable_label(self.show_sidebar, "◧").on_hover_text(t!("Mostrar u ocultar la lista de conexiones (Ctrl+B)")).clicked() {
                 self.show_sidebar = !self.show_sidebar;
             }
-            if ui.selectable_label(self.show_form, "▤").on_hover_text(t!("Mostrar u ocultar los datos de la conexión; oculto, el explorador y la consola ocupan todo (Ctrl+Mayús+B)")).clicked() {
+            if ui.add_enabled(self.form.is_some(), Button::selectable(self.show_form && self.form.is_some(), "▤")).on_hover_text(t!("Mostrar u ocultar la ventana con los datos de la conexión (Ctrl+Mayús+B)")).clicked() {
                 self.show_form = !self.show_form;
             }
             ui.separator();
@@ -1921,6 +1993,7 @@ impl App {
         let q = self.filter.to_lowercase();
         let mut clicked = None;
         let mut deselect = false;
+        let mut reopen = false;
         let new_unsaved = self.form.as_ref().filter(|f| f.mtime.is_none()).map(|f| f.conn.name.clone());
         ScrollArea::both().id_salt("lista_conexiones").auto_shrink(false).show(ui, |ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
@@ -1960,7 +2033,10 @@ impl App {
                 if r.clicked() {
                     if !sel {
                         clicked = Some(c.id.clone());
-                    } else if !dirty {
+                    } else if !self.show_form {
+                        // Elegida pero con la ventana cerrada: se vuelve a abrir.
+                        reopen = true;
+                    } else {
                         deselect = true;
                     }
                 }
@@ -1976,10 +2052,12 @@ impl App {
         });
         if let Some(id) = clicked {
             self.select(id);
+            self.show_form = true;
+        } else if reopen {
+            self.show_form = true;
         } else if deselect {
-            self.form = None;
-            self.selected = None;
-            self.test = TestState::Idle;
+            // Clic en la elegida con su ventana abierta: se cierra la ventana.
+            self.show_form = false;
         }
     }
 
@@ -2630,6 +2708,7 @@ impl App {
         let mut action: Option<u8> = None;
         let mut open_updater = false;
         let mut open_drivers = false;
+        let mut rename_all = false;
         let drivers = self.catalog.dir.join("drivers");
         Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
             ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
@@ -2645,6 +2724,14 @@ impl App {
                         }
                     });
                     ui.end_row();
+                    let mismatched = self.entries.iter().filter(|e| e.conn.id != store::file_id(&e.conn.name)).count();
+                    if mismatched > 0 {
+                        ui.label("");
+                        if ui.button(tf!("Renombrar {n} archivos .conexion como sus conexiones", n = mismatched)).on_hover_text(t!("Cada archivo pasa a llamarse como la conexión en la lista")).clicked() {
+                            rename_all = true;
+                        }
+                        ui.end_row();
+                    }
                     ui.label(t!("Drivers"));
                     ui.horizontal(|ui| {
                         let path = drivers.display().to_string();
@@ -2805,6 +2892,9 @@ impl App {
         }
         if open_drivers {
             self.open_drivers_dir();
+        }
+        if rename_all {
+            self.rename_all_files();
         }
         match action {
             Some(1) => {
@@ -2976,6 +3066,44 @@ impl App {
         }
     }
 
+    /// Ventana con los datos de la conexión elegida.
+    fn form_window(&mut self, ctx: &Context) {
+        let Some(f) = &self.form else { return };
+        let name = f.conn.name.trim();
+        let dirty = f.dirty();
+        let title = format!("{}{}", if dirty { "● " } else { "" }, if name.is_empty() { t!("Conexión").to_owned() } else { tf!("Conexión: {nombre}", nombre = name) });
+        let mut open = true;
+        let max_h = (ctx.content_rect().height() - 80.0).max(200.0);
+        Window::new(title)
+            .id(win_id(Win::Form))
+            .open(&mut open)
+            .collapsible(true)
+            .resizable(true)
+            .default_size([760.0, 560.0])
+            .default_pos(ctx.content_rect().center() - vec2(380.0, 300.0))
+            .max_height(max_h)
+            .show(ctx, |ui| {
+                ScrollArea::vertical().id_salt("form_scroll").auto_shrink([false, true]).show(ui, |ui| self.form_ui(ui));
+                ui.separator();
+                ui.horizontal(|ui| {
+                    let can_save = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
+                    if ui.add_enabled(can_save, Button::new(t!("💾 Guardar"))).on_hover_text("Ctrl+S").clicked() {
+                        self.save();
+                    }
+                    let busy = matches!(self.test, TestState::Running { .. });
+                    if ui.add_enabled(!busy, Button::new(t!("▶ Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
+                        self.test();
+                    }
+                    if ui.button(t!("Cerrar")).clicked() {
+                        self.show_form = false;
+                    }
+                });
+            });
+        if !open {
+            self.show_form = false;
+        }
+    }
+
     fn is_open(&self, w: Win) -> bool {
         match w {
             Win::Delete => self.confirm_delete,
@@ -2986,6 +3114,7 @@ impl App {
             Win::Settings => self.show_settings,
             // Mientras instala, la ventana se queda.
             Win::Test => !matches!(self.test, TestState::Idle),
+            Win::Form => self.show_form && self.form.is_some(),
             Win::Updater => self.show_updater && !self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running),
         }
     }
@@ -2998,6 +3127,7 @@ impl App {
             Win::History => self.console.show_history = false,
             Win::Settings => self.show_settings = false,
             Win::Updater => self.show_updater = false,
+            Win::Form => self.show_form = false,
             Win::Test => {
                 if let TestState::Running { id, .. } = self.test {
                     self.pending.remove(&id);
@@ -3014,7 +3144,7 @@ impl App {
             return;
         }
         // Orden de prioridad si no se sabe cuál está delante.
-        let open: Vec<Win> = [Win::Delete, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
+        let open: Vec<Win> = [Win::Delete, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings, Win::Form].into_iter().filter(|w| self.is_open(*w)).collect();
         let Some(first) = open.first().copied() else { return };
         let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
         let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
@@ -3115,6 +3245,9 @@ impl App {
             }
             if std::env::var_os("CONECTOR_BORRAR").is_some() {
                 self.confirm_delete = true;
+            }
+            if std::env::var_os("CONECTOR_RENOMBRAR").is_some() {
+                self.rename_all_files();
             }
             if std::env::var_os("CONECTOR_ACTUALIZAR").is_some() {
                 self.open_updater(ctx);
@@ -3270,6 +3403,7 @@ enum Win {
     Settings,
     Updater,
     Test,
+    Form,
 }
 
 fn win_id(w: Win) -> Id {
@@ -3457,14 +3591,10 @@ impl eframe::App for App {
         if self.show_sidebar {
             Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         }
-        if self.show_form {
-            Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
-            CentralPanel::default().show(ui, |ui| {
-                ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
-            });
-        } else {
-            // Sin los datos de la conexión: explorador y consola ocupan todo.
-            CentralPanel::default().show(ui, |ui| self.console_ui(ui));
+        // Explorador y consola ocupan la ventana; los datos de la conexión van en una ventana aparte.
+        CentralPanel::default().show(ui, |ui| self.console_ui(ui));
+        if self.show_form && self.form.is_some() {
+            self.form_window(&ctx);
         }
         if !matches!(self.test, TestState::Idle) {
             self.test_window(&ctx);

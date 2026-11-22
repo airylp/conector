@@ -270,6 +270,23 @@ fn unesc(s: &str) -> String {
 }
 
 /// Identificador de archivo a partir del nombre: `Producción Oracle` → `produccion-oracle`.
+/// Nombre de archivo de una conexión: su nombre tal cual, sin los caracteres que los
+/// sistemas no admiten en archivos (`/ \ : * ? " < > |`, control) ni puntos o espacios al final.
+pub fn file_id(name: &str) -> String {
+    let mut s: String = name.trim().chars().map(|c| if c.is_control() || "/\\:*?\"<>|".contains(c) { '-' } else { c }).collect();
+    while s.ends_with(['.', ' ']) {
+        s.pop();
+    }
+    let s = s.trim_start_matches(['.', ' ']).to_owned();
+    if s.is_empty() {
+        return "conexion".into();
+    }
+    // Nombres reservados de Windows.
+    let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = ["CON", "PRN", "AUX", "NUL"].contains(&stem.as_str()) || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+    if reserved { format!("{s}_") } else { s }
+}
+
 pub fn slug(name: &str) -> String {
     let mut s = String::new();
     for ch in name.chars() {
@@ -376,14 +393,25 @@ impl Catalog {
 
     /// Id libre para un nombre nuevo.
     pub fn free_id(&self, name: &str) -> String {
-        let base = slug(name);
+        self.free_id_for(name, None)
+    }
+
+    /// Nombre de archivo libre para `name`; `current` (el propio archivo) cuenta como libre.
+    pub fn free_id_for(&self, name: &str, current: Option<&str>) -> String {
+        let base = file_id(name);
         let mut id = base.clone();
         let mut n = 2;
-        while self.path_of(&id).exists() {
-            id = format!("{base}-{n}");
+        // Sin distinguir mayúsculas (Windows y macOS no las distinguen en archivos).
+        while !current.is_some_and(|c| c.to_lowercase() == id.to_lowercase()) && self.path_of(&id).exists() {
+            id = format!("{base} ({n})");
             n += 1;
         }
         id
+    }
+
+    /// Renombra el archivo de una conexión (conserva la fecha de modificación).
+    pub fn rename(&self, from: &str, to: &str) -> std::io::Result<()> {
+        std::fs::rename(self.path_of(from), self.path_of(to))
     }
 
     /// Guarda; con `expected` falla si el archivo cambió desde que se leyó.
@@ -708,10 +736,15 @@ mod tests {
         c.name = "Uno".into();
         c.id = cat.free_id(&c.name);
         let m = cat.save(&c, Some(None)).unwrap();
-        assert_eq!(cat.free_id("Uno"), "uno-2");
+        assert_eq!(c.id, "Uno");
+        assert_eq!(cat.free_id("Uno"), "Uno (2)");
+        assert_eq!(cat.free_id_for("uno", Some("Uno")), "uno");
+        assert_eq!(file_id(" Ventas: prod/2024? "), "Ventas- prod-2024-");
+        assert_eq!(file_id("con"), "con_");
+        assert_eq!(file_id("..."), "conexion");
         // Otro equipo lo modifica.
         std::thread::sleep(std::time::Duration::from_millis(20));
-        std::fs::write(cat.path_of("uno"), "nombre=Otro\n").unwrap();
+        std::fs::write(cat.path_of("Uno"), "nombre=Otro\n").unwrap();
         assert!(matches!(cat.save(&c, Some(m)), Err(SaveError::Changed)));
         let list = cat.load();
         assert_eq!(list.len(), 1);
