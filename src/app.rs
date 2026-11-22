@@ -183,6 +183,8 @@ struct ResultTab {
     rows: Vec<Box<[Option<Box<str>>]>>,
     widths: Vec<f32>,
     info: String,
+    /// Pestaña de texto (DDL) en vez de tabla.
+    text: Option<String>,
 }
 
 /// Máximo de pestañas de resultados (las más viejas se cierran).
@@ -271,6 +273,8 @@ enum Meta {
     Schemas,
     Tables(String, String),
     Columns(String),
+    /// DDL de una tabla: (nombre completo, tipo de getTables).
+    Ddl(String, String),
 }
 
 enum Pending {
@@ -374,6 +378,8 @@ pub struct App {
     pending: HashMap<u64, Pending>,
     meta_buf: HashMap<u64, (Vec<String>, Vec<Box<[Option<Box<str>>]>>)>,
     test: TestState,
+    /// Nombre de la conexión probada (título de la ventana del resultado).
+    test_name: String,
     console: Console,
     explorer: Explorer,
     status: String,
@@ -444,6 +450,7 @@ impl App {
             pending: HashMap::new(),
             meta_buf: HashMap::new(),
             test: TestState::Idle,
+            test_name: String::new(),
             console: Console { sql: "select 1".into(), ..Default::default() },
             explorer: Explorer::default(),
             status: String::new(),
@@ -469,9 +476,6 @@ impl App {
         // Aviso discreto: solo si se instaló con install.sh (lleva commit) y no en pruebas.
         if app.settings.check_updates && crate::update::SUPPORTED && crate::update::current_commit().is_some() && std::env::var_os("CONECTOR_CAPTURA").is_none() {
             app.updater = Some(crate::update::Updater::check(cc.egui_ctx.clone()));
-        }
-        if let Some(id) = app.entries.first().map(|e| e.conn.id.clone()) {
-            app.select(id);
         }
         app
     }
@@ -695,6 +699,7 @@ impl App {
 
     fn test(&mut self) {
         let Some(f) = &self.form else { return };
+        self.test_name = f.conn.name.clone();
         let fields = match self.request_fields(f) {
             Ok(x) => x,
             Err(e) => {
@@ -864,11 +869,15 @@ impl App {
                     x.loading = true;
                 }
             }
-            Meta::Columns(label) => {
+            Meta::Columns(label) | Meta::Ddl(label, _) => {
                 let (q, table) = label.rsplit_once('.').unwrap_or(("", label));
                 let sch = self.explorer.schemas.iter().find(|x| x.qualifier() == q);
                 let (cat, sch) = sch.map(|x| (x.cat.clone(), x.sch.clone())).unwrap_or_default();
-                f.extend([("nivel".into(), "columnas".into()), ("catalogo".into(), cat), ("esquema".into(), sch), ("tabla".into(), table.to_owned())]);
+                let level = if matches!(req, Meta::Ddl(..)) { "ddl" } else { "columnas" };
+                f.extend([("nivel".into(), level.into()), ("catalogo".into(), cat), ("esquema".into(), sch), ("tabla".into(), table.to_owned())]);
+                if let Meta::Ddl(_, kind) = &req {
+                    f.push(("tipo".into(), kind.clone()));
+                }
             }
         }
         let id = self.send("meta", &f, Pending::Meta(req));
@@ -1030,7 +1039,7 @@ impl App {
                     }
                     self.status = e.msg;
                 }
-                Meta::Columns(_) => {
+                Meta::Columns(_) | Meta::Ddl(..) => {
                     self.console.error = Some(e);
                     self.console.active = None;
                 }
@@ -1567,7 +1576,14 @@ impl App {
                 let rows: Vec<_> = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
                 let info = tf!("Columnas de {tabla}: {n}", tabla = label, n = rows.len());
                 let cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
-                self.console.push_tab(ResultTab { title: format!("▦ {label}"), sql: String::new(), cols, rows, widths: Vec::new(), info });
+                self.console.push_tab(ResultTab { title: format!("▦ {label}"), sql: String::new(), cols, rows, widths: Vec::new(), info, text: None });
+            }
+            Meta::Ddl(label, _) => {
+                let ddl = rows.first().and_then(|r| r.first().cloned().flatten()).map(String::from).unwrap_or_default();
+                // Si ya hay una pestaña con la DDL de esa tabla, se reemplaza.
+                let title = format!("DDL · {label}");
+                self.console.tabs.retain(|t| !(t.text.is_some() && t.title == title));
+                self.console.push_tab(ResultTab { title, info: tf!("DDL de {tabla}", tabla = label), text: Some(ddl), ..Default::default() });
             }
         }
     }
@@ -1725,9 +1741,6 @@ impl App {
             self.selected = None;
             self.load_lock();
             self.reload();
-            if let Some(id) = self.entries.first().map(|e| e.conn.id.clone()) {
-                self.select(id);
-            }
         }
         if serve_changed || catalog_changed || java_changed {
             self.start_server();
@@ -1827,6 +1840,7 @@ impl App {
         ui.add_space(4.0);
         let q = self.filter.to_lowercase();
         let mut clicked = None;
+        let mut deselect = false;
         let new_unsaved = self.form.as_ref().filter(|f| f.mtime.is_none()).map(|f| f.conn.name.clone());
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             if let Some(n) = &new_unsaved {
@@ -1850,8 +1864,12 @@ impl App {
                 let lock = if c.secret.is_empty() { "" } else { " 🔑" };
                 let label = if dirty { format!("● {}{lock}", c.name) } else { format!("{}{lock}", c.name) };
                 let r = ui.selectable_label(sel, label).on_hover_text(&c.url);
-                if r.clicked() && !sel {
-                    clicked = Some(c.id.clone());
+                if r.clicked() {
+                    if !sel {
+                        clicked = Some(c.id.clone());
+                    } else if !dirty {
+                        deselect = true;
+                    }
                 }
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
@@ -1860,6 +1878,10 @@ impl App {
         });
         if let Some(id) = clicked {
             self.select(id);
+        } else if deselect {
+            self.form = None;
+            self.selected = None;
+            self.test = TestState::Idle;
         }
     }
 
@@ -1889,12 +1911,13 @@ impl App {
         let ctx = ui.ctx().clone();
         self.lock_banner(ui);
         let mut pick_jar = false;
+        let mut open_drivers = false;
         let mut want_driver = None;
         let catalog = self.catalog.dir.clone();
         let has_key = self.key.is_some();
         let driver_dl = self.driver_dl.as_ref().map(|(s, _)| s.lock().unwrap().clone());
         let Some(f) = &mut self.form else {
-            ui.centered_and_justified(|ui| ui.weak(t!("Elige o crea una conexión.")));
+            ui.centered_and_justified(|ui| ui.weak(t!("Elige una conexión en el panel lateral para ver sus datos, o crea una con «＋ Nueva».")));
             return;
         };
         if f.external {
@@ -1965,9 +1988,14 @@ impl App {
             ui.label(t!("Jar del driver")).on_hover_text(t!("Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo."));
             ui.horizontal_top(|ui| {
                 ui.add(TextEdit::multiline(&mut f.jars).font(TextStyle::Monospace).hint_text(t!("vacío = <catálogo>/drivers")).desired_rows(2).desired_width((w - 90.0).max(120.0)));
-                if ui.button(t!("Añadir…")).clicked() {
-                    pick_jar = true;
-                }
+                ui.vertical(|ui| {
+                    if ui.button(t!("Añadir…")).clicked() {
+                        pick_jar = true;
+                    }
+                    if ui.button("🗁").on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
+                        open_drivers = true;
+                    }
+                });
             });
             ui.end_row();
             // ¿Hay jar? Si no, ofrecer descargarlo de Maven Central.
@@ -2025,14 +2053,41 @@ impl App {
         if pick_jar {
             self.pick(&ctx, false);
         }
+        if open_drivers {
+            self.open_drivers_dir();
+        }
         if let Some(t) = want_driver {
             self.download_driver(&ctx, t);
         }
     }
 
-    /// Resultado de «Probar conexión», arriba del formulario para que siempre se vea.
-    fn test_result(&mut self, ui: &mut Ui) {
-        let max_h = ui.available_height() * 0.45;
+    /// Ventana con el resultado de «Probar conexión». Cerrarla descarta el resultado
+    /// (si aún no llegó, se ignora cuando llegue).
+    fn test_window(&mut self, ctx: &Context) {
+        let mut open = true;
+        let title = if self.test_name.trim().is_empty() { t!("Prueba de conexión").to_owned() } else { tf!("Prueba de conexión: {nombre}", nombre = self.test_name.trim()) };
+        let max_h = (ctx.content_rect().height() * 0.6).max(120.0);
+        let mut again = false;
+        Window::new(title).id(win_id(Win::Test)).open(&mut open).collapsible(false).resizable(true).default_width(620.0).show(ctx, |ui| {
+            self.test_result(ui, max_h);
+            if !matches!(self.test, TestState::Running { .. }) {
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    again = ui.add_enabled(self.form.is_some(), Button::new(t!("▶ Probar otra vez"))).clicked();
+                    if ui.button(t!("Cerrar")).clicked() {
+                        self.test = TestState::Idle;
+                    }
+                });
+            }
+        });
+        if again {
+            self.test();
+        } else if !open {
+            self.close(Win::Test);
+        }
+    }
+
+    fn test_result(&mut self, ui: &mut Ui, max_h: f32) {
         match &self.test {
             TestState::Idle => {}
             TestState::Running { since, .. } => {
@@ -2111,13 +2166,17 @@ impl App {
                             }
                             let icon = if kind.to_ascii_uppercase().contains("VIEW") { "👁" } else { "▦" };
                             let full = if x.qualifier().is_empty() { name.clone() } else { format!("{}.{name}", x.qualifier()) };
-                            let r = ui.add(Label::new(format!("{icon} {name}")).sense(Sense::click())).on_hover_text(format!("{kind}\n{}", t!("Clic: columnas · Doble clic: SELECT")));
+                            let r = ui.add(Label::new(format!("{icon} {name}")).sense(Sense::click())).on_hover_text(format!("{kind}\n{}", t!("Clic: DDL · Doble clic: SELECT")));
                             if r.double_clicked() {
                                 insert = Some(format!("select * from {full}"));
                             } else if r.clicked() {
-                                want = Some(Meta::Columns(full.clone()));
+                                want = Some(Meta::Ddl(full.clone(), kind.clone()));
                             }
                             r.context_menu(|ui| {
+                                if ui.button(t!("Ver DDL")).clicked() {
+                                    want = Some(Meta::Ddl(full.clone(), kind.clone()));
+                                    ui.close();
+                                }
                                 if ui.button(t!("Ver columnas")).clicked() {
                                     want = Some(Meta::Columns(full.clone()));
                                     ui.close();
@@ -2299,6 +2358,31 @@ impl App {
                 let running = self.console.running.is_some() && self.console.current_tab && self.console.active == Some(self.console.tabs.len() - 1);
                 let mut copy = false;
                 let mut want_export = false;
+                let mut to_editor = None;
+                if let Some(text) = self.console.tab().and_then(|t| t.text.clone()) {
+                    let info = self.console.tab().map(|t| t.info.clone()).unwrap_or_default();
+                    ui.horizontal(|ui| {
+                        ui.weak(info);
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.small_button(t!("Al editor")).on_hover_text(t!("Copia la DDL al editor SQL")).clicked() {
+                                to_editor = Some(text.clone());
+                            }
+                            if ui.small_button(t!("📋 Copiar")).clicked() {
+                                ui.ctx().copy_text(text.clone());
+                                self.status = t!("DDL copiada.").into();
+                            }
+                        });
+                    });
+                    ScrollArea::both().id_salt("ddl").auto_shrink(false).show(ui, |ui| {
+                        let job = highlight_job(&text, ui.style(), None);
+                        ui.add(Label::new(job).selectable(true).extend());
+                    });
+                    if let Some(t) = to_editor {
+                        self.console.sql = t;
+                        self.console.selection = None;
+                    }
+                    return;
+                }
                 if let Some(t) = self.console.tab() {
                     ui.horizontal(|ui| {
                         ui.weak(&t.info);
@@ -2377,6 +2461,8 @@ impl App {
         let mut pick = false;
         let mut action: Option<u8> = None;
         let mut open_updater = false;
+        let mut open_drivers = false;
+        let drivers = self.catalog.dir.join("drivers");
         Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
             ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
                 let s = &mut self.settings_edit;
@@ -2388,6 +2474,17 @@ impl App {
                         ui.add(TextEdit::singleline(&mut s.catalog).hint_text(default).desired_width(320.0));
                         if ui.button(t!("Elegir…")).clicked() {
                             pick = true;
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t!("Drivers"));
+                    ui.horizontal(|ui| {
+                        let path = drivers.display().to_string();
+                        ui.allocate_ui(vec2(320.0, ui.spacing().interact_size.y), |ui| {
+                            ui.add(Label::new(RichText::new(&path).weak()).truncate()).on_hover_text(&path);
+                        });
+                        if ui.button(t!("🗁 Abrir carpeta")).on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
+                            open_drivers = true;
                         }
                     });
                     ui.end_row();
@@ -2538,6 +2635,9 @@ impl App {
         if open_updater {
             self.open_updater(ctx);
         }
+        if open_drivers {
+            self.open_drivers_dir();
+        }
         match action {
             Some(1) => {
                 self.unlock();
@@ -2576,6 +2676,14 @@ impl App {
         }
         if delete || close {
             self.confirm_delete = false;
+        }
+    }
+
+    /// Abre `<catálogo>/drivers` (donde se descargan los drivers) en el gestor de archivos.
+    fn open_drivers_dir(&mut self) {
+        let dir = self.catalog.dir.join("drivers");
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| open_in_file_manager(&dir)) {
+            self.status = tf!("No se pudo abrir {ruta}: {e}", ruta = dir.display(), e = e);
         }
     }
 
@@ -2669,6 +2777,7 @@ impl App {
             Win::History => self.console.show_history,
             Win::Settings => self.show_settings,
             // Mientras instala, la ventana se queda.
+            Win::Test => !matches!(self.test, TestState::Idle),
             Win::Updater => self.show_updater && !self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running),
         }
     }
@@ -2681,6 +2790,12 @@ impl App {
             Win::History => self.console.show_history = false,
             Win::Settings => self.show_settings = false,
             Win::Updater => self.show_updater = false,
+            Win::Test => {
+                if let TestState::Running { id, .. } = self.test {
+                    self.pending.remove(&id);
+                }
+                self.test = TestState::Idle;
+            }
         }
     }
 
@@ -2691,7 +2806,7 @@ impl App {
             return;
         }
         // Orden de prioridad si no se sabe cuál está delante.
-        let open: Vec<Win> = [Win::Delete, Win::Updater, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
+        let open: Vec<Win> = [Win::Delete, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings].into_iter().filter(|w| self.is_open(*w)).collect();
         let Some(first) = open.first().copied() else { return };
         let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
         let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
@@ -2770,6 +2885,11 @@ impl App {
     fn debug_capture(&mut self, ctx: &Context) {
         let Ok(path) = std::env::var("CONECTOR_CAPTURA") else { return };
         self.debug_frames += 1;
+        if self.debug_frames == 2 && self.form.is_none() && std::env::var_os("CONECTOR_SIN_ELEGIR").is_none() {
+            if let Some(id) = self.entries.first().map(|e| e.conn.id.clone()) {
+                self.select(id);
+            }
+        }
         if self.debug_frames == 3 {
             if std::env::var_os("CONECTOR_PROBAR").is_some() {
                 self.test();
@@ -2797,6 +2917,17 @@ impl App {
                 let req = Meta::Tables(x.cat.clone(), x.sch.clone());
                 self.meta(req);
                 self.explorer.filter = std::env::var("CONECTOR_FILTRO_TABLA").unwrap_or_default();
+            }
+        }
+        // CONECTOR_DDL=tabla pide su DDL (como un clic en el explorador) cuando estén las tablas.
+        if let Ok(want) = std::env::var("CONECTOR_DDL") {
+            let asked = self.console.tabs.iter().any(|t| t.text.is_some()) || self.pending.values().any(|p| matches!(p, Pending::Meta(Meta::Ddl(..))));
+            let found = self.explorer.schemas.iter().find_map(|x| {
+                let (n, k) = x.tables.as_ref()?.iter().find(|(n, _)| n.eq_ignore_ascii_case(&want))?;
+                Some((if x.qualifier().is_empty() { n.clone() } else { format!("{}.{n}", x.qualifier()) }, k.clone()))
+            });
+            if let (false, Some((full, kind))) = (asked, found) {
+                self.meta(Meta::Ddl(full, kind));
             }
         }
         // CONECTOR_EXPORTAR=ruta.ext exporta TODO el resultado visible al terminar el SQL;
@@ -2903,6 +3034,23 @@ fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usiz
     job
 }
 
+/// Abre una carpeta con el gestor de archivos del sistema (sin esperar).
+fn open_in_file_manager(dir: &std::path::Path) -> std::io::Result<()> {
+    let prog = if cfg!(target_os = "windows") {
+        "explorer"
+    } else if cfg!(target_os = "macos") {
+        "open"
+    } else {
+        "xdg-open"
+    };
+    let mut child = std::process::Command::new(prog).arg(dir).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn()?;
+    // Recoge el proceso al terminar para no dejar zombis.
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Ventanas que Escape puede cerrar.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Win {
@@ -2912,6 +3060,7 @@ enum Win {
     History,
     Settings,
     Updater,
+    Test,
 }
 
 fn win_id(w: Win) -> Id {
@@ -3081,13 +3230,11 @@ impl eframe::App for App {
         Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
         CentralPanel::default().show(ui, |ui| {
-            if !matches!(self.test, TestState::Idle) {
-                self.test_result(ui);
-                ui.add_space(4.0);
-                ui.separator();
-            }
             ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
         });
+        if !matches!(self.test, TestState::Idle) {
+            self.test_window(&ctx);
+        }
         if self.show_settings {
             self.settings_window(&ctx);
         }

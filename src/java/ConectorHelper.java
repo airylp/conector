@@ -326,11 +326,250 @@ public final class ConectorHelper {
             res = stream(id, m.getTables(cat, sch, "%", null), 50000);
         } else if (level.equals("columnas")) {
             res = stream(id, m.getColumns(cat, sch, a.get("tabla"), "%"), 50000);
+        } else if (level.equals("ddl")) {
+            String kind = a.containsKey("tipo") ? a.get("tipo") : "TABLE";
+            send("columnas", id, "DDL\u0001");
+            send("fila", id, ddl(c, m, cat, sch, a.get("tabla"), kind));
+            res = new long[] { 1, 0 };
         } else {
             throw new IllegalArgumentException("nivel desconocido: " + level);
         }
         long ms = (System.nanoTime() - t0) / 1000000;
         send("fin", id, "filas=" + res[0], "mas=" + (res[1] != 0), "actualizadas=", "ms=" + ms);
+    }
+
+    // ---------- DDL ----------
+
+    /**
+     * DDL de una tabla o vista. Primero la de la propia base si sabe darla
+     * (MySQL/MariaDB, Oracle, SQLite; vistas por information_schema); si no,
+     * se arma con los metadatos JDBC: columnas, clave primaria, foráneas e índices.
+     */
+    static String ddl(Connection c, DatabaseMetaData m, String cat, String sch, String table, String kind) throws SQLException {
+        String product = String.valueOf(m.getDatabaseProductName()).toLowerCase(java.util.Locale.ROOT);
+        boolean view = kind.toUpperCase(java.util.Locale.ROOT).contains("VIEW");
+        String nat = null;
+        try {
+            if (product.contains("mysql") || product.contains("mariadb")) {
+                String q = "`" + table.replace("`", "``") + "`";
+                if (cat != null) q = "`" + cat.replace("`", "``") + "`." + q;
+                nat = queryText(c, "show create " + (view ? "view " : "table ") + q, 2, (String[]) null);
+            } else if (product.contains("oracle")) {
+                nat = queryText(c, "select dbms_metadata.get_ddl(?, ?, ?) from dual", 1, view ? "VIEW" : "TABLE", table, sch == null ? m.getUserName() : sch);
+            } else if (product.contains("sqlite")) {
+                nat = queryText(c, "select sql from sqlite_master where name = ?", 1, table);
+            } else if (view) {
+                String body = queryText(c, "select view_definition from information_schema.views where table_name = ?"
+                        + (sch != null ? " and table_schema = ?" : ""), 1, sch != null ? new String[] { table, sch } : new String[] { table });
+                if (body != null && !body.trim().isEmpty()) nat = "CREATE VIEW " + qualified(m, cat, sch, table) + " AS\n" + body.trim();
+            }
+        } catch (SQLException e) {
+            nat = null; // sin permisos o sin soporte: se genera por metadatos
+        }
+        if (nat != null && !nat.trim().isEmpty()) {
+            nat = nat.trim();
+            return nat.endsWith(";") || nat.endsWith("/") ? nat : nat + ";";
+        }
+        return generatedDdl(m, cat, sch, table, view);
+    }
+
+    static String queryText(Connection c, String sql, int col, String... params) throws SQLException {
+        PreparedStatement ps = c.prepareStatement(sql);
+        try {
+            if (params != null) for (int i = 0; i < params.length; i++) ps.setString(i + 1, params[i]);
+            ResultSet r = ps.executeQuery();
+            try {
+                if (!r.next()) return null;
+                Object o = r.getObject(col);
+                if (o instanceof Clob) {
+                    Clob cl = (Clob) o;
+                    return cl.getSubString(1, (int) Math.min(cl.length(), 4000000));
+                }
+                return o == null ? null : o.toString();
+            } finally {
+                r.close();
+            }
+        } finally {
+            ps.close();
+        }
+    }
+
+    static String generatedDdl(DatabaseMetaData m, String cat, String sch, String table, boolean view) throws SQLException {
+        String name = qualified(m, cat, sch, table);
+        StringBuilder sb = new StringBuilder();
+        sb.append("-- ").append(view ? "Vista" : "Tabla").append(" generada a partir de los metadatos JDBC (aproximada)\n");
+        sb.append(view ? "-- CREATE VIEW " : "CREATE TABLE ").append(name).append(" (\n");
+        List<String> lines = new ArrayList<String>();
+        List<String[]> remarks = new ArrayList<String[]>();
+        ResultSet r = m.getColumns(cat, sch, table, "%");
+        try {
+            while (r.next()) {
+                String col = r.getString("COLUMN_NAME");
+                StringBuilder l = new StringBuilder("    ").append(quote(m, col)).append(' ').append(typeOf(r));
+                String def = safeString(r, "COLUMN_DEF");
+                if (def != null && !def.trim().isEmpty()) l.append(" DEFAULT ").append(def.trim());
+                else if ("YES".equalsIgnoreCase(safeString(r, "IS_AUTOINCREMENT"))) l.append(" /* autoincremental */");
+                if (r.getInt("NULLABLE") == DatabaseMetaData.columnNoNulls) l.append(" NOT NULL");
+                lines.add(l.toString());
+                String rem = safeString(r, "REMARKS");
+                if (rem != null && !rem.trim().isEmpty()) remarks.add(new String[] { col, rem });
+            }
+        } finally {
+            r.close();
+        }
+        String pkName = null;
+        Set<String> keyCols = new HashSet<String>();
+        Set<String> keyNames = new HashSet<String>();
+        if (!view) {
+            // Clave primaria (columnas en el orden KEY_SEQ).
+            pkName = null;
+            java.util.TreeMap<Integer, String> pk = new java.util.TreeMap<Integer, String>();
+            try {
+                r = m.getPrimaryKeys(cat, sch, table);
+                try {
+                    while (r.next()) {
+                        pk.put(r.getInt("KEY_SEQ"), r.getString("COLUMN_NAME"));
+                        pkName = r.getString("PK_NAME");
+                    }
+                } finally {
+                    r.close();
+                }
+            } catch (SQLException ignored) {
+            }
+            if (!pk.isEmpty()) {
+                StringBuilder l = new StringBuilder("    ");
+                if (pkName != null && !pkName.isEmpty()) l.append("CONSTRAINT ").append(quote(m, pkName)).append(' ');
+                l.append("PRIMARY KEY (").append(joinQuoted(m, pk.values())).append(')');
+                keyCols.add(joinQuoted(m, pk.values()));
+                if (pkName != null) keyNames.add(pkName);
+                lines.add(l.toString());
+            }
+            // Claves foráneas, agrupadas por nombre.
+            Map<String, String[]> fks = new java.util.LinkedHashMap<String, String[]>();
+            try {
+                r = m.getImportedKeys(cat, sch, table);
+                try {
+                    while (r.next()) {
+                        String fk = r.getString("FK_NAME");
+                        String key = fk != null ? fk : r.getString("PKTABLE_NAME") + "#" + fks.size();
+                        String[] cur = fks.get(key);
+                        String from = quote(m, r.getString("FKCOLUMN_NAME")), to = quote(m, r.getString("PKCOLUMN_NAME"));
+                        if (cur == null) {
+                            String ref = qualified(m, safeString(r, "PKTABLE_CAT"), safeString(r, "PKTABLE_SCHEM"), r.getString("PKTABLE_NAME"));
+                            fks.put(key, new String[] { fk, from, ref, to, rule(r.getShort("DELETE_RULE"), "DELETE") + rule(r.getShort("UPDATE_RULE"), "UPDATE") });
+                        } else {
+                            cur[1] += ", " + from;
+                            cur[3] += ", " + to;
+                        }
+                    }
+                } finally {
+                    r.close();
+                }
+            } catch (SQLException ignored) {
+            }
+            for (String[] f : fks.values()) {
+                keyCols.add(f[1]);
+                if (f[0] != null) keyNames.add(f[0]);
+                StringBuilder l = new StringBuilder("    ");
+                if (f[0] != null && !f[0].isEmpty()) l.append("CONSTRAINT ").append(quote(m, f[0])).append(' ');
+                l.append("FOREIGN KEY (").append(f[1]).append(") REFERENCES ").append(f[2]).append(" (").append(f[3]).append(')').append(f[4]);
+                lines.add(l.toString());
+            }
+        }
+        for (int i = 0; i < lines.size(); i++) {
+            sb.append(view ? "-- " : "").append(lines.get(i)).append(i + 1 < lines.size() ? ",\n" : "\n");
+        }
+        sb.append(view ? "-- );\n" : ");\n");
+        if (!view) {
+            // Índices (menos el de la clave primaria, que ya está arriba).
+            Map<String, String[]> idx = new java.util.LinkedHashMap<String, String[]>();
+            try {
+                r = m.getIndexInfo(cat, sch, table, false, true);
+                try {
+                    while (r.next()) {
+                        if (r.getShort("TYPE") == DatabaseMetaData.tableIndexStatistic) continue;
+                        String in = r.getString("INDEX_NAME"), col = r.getString("COLUMN_NAME");
+                        if (in == null || col == null) continue;
+                        String asc = safeString(r, "ASC_OR_DESC");
+                        String c = quote(m, col) + ("D".equals(asc) ? " DESC" : "");
+                        String[] cur = idx.get(in);
+                        if (cur == null) idx.put(in, new String[] { r.getBoolean("NON_UNIQUE") ? "" : "UNIQUE ", c });
+                        else cur[1] += ", " + c;
+                    }
+                } finally {
+                    r.close();
+                }
+            } catch (SQLException ignored) {
+            }
+            boolean first = true;
+            for (Map.Entry<String, String[]> e : idx.entrySet()) {
+                String in = e.getKey();
+                String up = in.toUpperCase(java.util.Locale.ROOT);
+                // Índices que la base crea sola para la clave primaria y las foráneas.
+                boolean implicit = keyNames.contains(in) || up.startsWith("PRIMARY") || up.endsWith("_PKEY")
+                        || ((up.startsWith("CONSTRAINT_INDEX") || up.startsWith("SYS_") || up.startsWith("PK_") || up.startsWith("FK_")) && keyCols.contains(e.getValue()[1]));
+                if (implicit) continue;
+                if (first) sb.append('\n');
+                first = false;
+                sb.append("CREATE ").append(e.getValue()[0]).append("INDEX ").append(quote(m, in)).append(" ON ").append(name)
+                        .append(" (").append(e.getValue()[1]).append(");\n");
+            }
+        }
+        for (String[] rm : remarks) {
+            sb.append("COMMENT ON COLUMN ").append(name).append('.').append(quote(m, rm[0])).append(" IS '").append(rm[1].replace("'", "''")).append("';\n");
+        }
+        return sb.toString().trim();
+    }
+
+    static String rule(short r, String what) {
+        switch (r) {
+            case DatabaseMetaData.importedKeyCascade: return " ON " + what + " CASCADE";
+            case DatabaseMetaData.importedKeySetNull: return " ON " + what + " SET NULL";
+            case DatabaseMetaData.importedKeySetDefault: return " ON " + what + " SET DEFAULT";
+            default: return "";
+        }
+    }
+
+    static String typeOf(ResultSet r) throws SQLException {
+        String t = r.getString("TYPE_NAME");
+        if (t == null) t = "?";
+        if (t.indexOf('(') >= 0) return t;
+        int size = r.getInt("COLUMN_SIZE");
+        boolean noSize = r.wasNull() || size <= 0;
+        int dec = r.getInt("DECIMAL_DIGITS");
+        boolean noDec = r.wasNull();
+        String u = t.toUpperCase(java.util.Locale.ROOT);
+        boolean lob = u.contains("LOB") || u.contains("TEXT") || u.equals("BYTEA") || u.contains("LONG");
+        if (noSize || lob || size >= 1000000000) return t;
+        if (u.contains("CHAR") || u.contains("BINARY") || u.equals("BIT VARYING")) return t + "(" + size + ")";
+        if (u.equals("NUMERIC") || u.equals("DECIMAL") || u.equals("NUMBER")) return t + "(" + size + (!noDec && dec > 0 ? "," + dec : "") + ")";
+        return t;
+    }
+
+    static String joinQuoted(DatabaseMetaData m, java.util.Collection<String> cols) throws SQLException {
+        StringBuilder sb = new StringBuilder();
+        for (String c : cols) sb.append(sb.length() > 0 ? ", " : "").append(quote(m, c));
+        return sb.toString();
+    }
+
+    static String qualified(DatabaseMetaData m, String cat, String sch, String table) throws SQLException {
+        StringBuilder sb = new StringBuilder();
+        if (sch != null && !sch.isEmpty()) sb.append(quote(m, sch)).append('.');
+        else if (cat != null && !cat.isEmpty()) sb.append(quote(m, cat)).append('.');
+        return sb.append(quote(m, table)).toString();
+    }
+
+    /** Pone comillas solo si hacen falta (caracteres raros o mayúsculas/minúsculas que la base cambiaría). */
+    static String quote(DatabaseMetaData m, String id) throws SQLException {
+        if (id == null) return "";
+        boolean simple = id.matches("[A-Za-z_][A-Za-z0-9_$]*");
+        if (simple && m.storesUpperCaseIdentifiers() && !id.equals(id.toUpperCase(java.util.Locale.ROOT))) simple = false;
+        if (simple && m.storesLowerCaseIdentifiers() && !id.equals(id.toLowerCase(java.util.Locale.ROOT))) simple = false;
+        if (simple) return id;
+        String q = m.getIdentifierQuoteString();
+        if (q == null || q.trim().isEmpty()) q = "\"";
+        q = q.trim();
+        return q + id.replace(q, q + q) + q;
     }
 
     /**

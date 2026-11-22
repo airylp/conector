@@ -58,7 +58,6 @@ Sin conexiones. Pulsa «＋ Nueva».	No connections. Press “＋ New”.	Aucune
 🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:	🔒 This catalog has encrypted shared passwords. Shared passphrase:	🔒 Ce catalogue contient des mots de passe partagés chiffrés. Phrase commune :
 Recordar en este equipo	Remember on this computer	Retenir sur cet ordinateur
 Desbloquear	Unlock	Déverrouiller
-Elige o crea una conexión.	Choose or create a connection.	Choisissez ou créez une connexion.
 ⚠ Otro equipo o programa cambió esta conexión mientras la editabas. Guardar la sobrescribe.	⚠ Another computer or program changed this connection while you were editing it. Saving overwrites it.	⚠ Un autre ordinateur ou programme a modifié cette connexion pendant que vous l'éditiez. Enregistrer l'écrase.
 Nombre	Name	Nom
 Grupo	Group	Groupe
@@ -99,7 +98,6 @@ Recargar	Reload	Recharger
 🔎 Tabla	🔎 Table	🔎 Table
 Conecta para ver esquemas y tablas.	Connect to see schemas and tables.	Connectez-vous pour voir schémas et tables.
 … (filtra para ver más)	… (filter to see more)	… (filtrez pour en voir plus)
-Clic: columnas · Doble clic: SELECT	Click: columns · Double-click: SELECT	Clic : colonnes · Double-clic : SELECT
 Ver columnas	Show columns	Voir les colonnes
 Copiar nombre	Copy name	Copier le nom
 (sin tablas)	(no tables)	(aucune table)
@@ -249,3 +247,18 @@ No se pudo abrir la versión nueva: {e}	Could not open the new version: {e}	Impo
 📋 Copiar	📋 Copy	📋 Copier
 Copia el error completo	Copies the full error	Copie l’erreur complète
 Errores encadenados:	Chained errors:	Erreurs chaînées :
+Prueba de conexión	Connection test	Test de connexion
+Prueba de conexión: {nombre}	Connection test: {nombre}	Test de connexion : {nombre}
+▶ Probar otra vez	▶ Test again	▶ Tester à nouveau
+Cerrar	Close	Fermer
+Elige una conexión en el panel lateral para ver sus datos, o crea una con «＋ Nueva».	Pick a connection in the side panel to see its details, or create one with “＋ New”.	Choisissez une connexion dans le panneau latéral pour voir ses détails, ou créez-en une avec « ＋ Nouvelle ».
+Abrir la carpeta de drivers descargados	Open the downloaded drivers folder	Ouvrir le dossier des pilotes téléchargés
+Drivers	Drivers	Pilotes
+🗁 Abrir carpeta	🗁 Open folder	🗁 Ouvrir le dossier
+No se pudo abrir {ruta}: {e}	Could not open {ruta}: {e}	Impossible d’ouvrir {ruta} : {e}
+Clic: DDL · Doble clic: SELECT	Click: DDL · Double-click: SELECT	Clic : DDL · Double-clic : SELECT
+Ver DDL	Show DDL	Voir le DDL
+DDL de {tabla}	DDL of {tabla}	DDL de {tabla}
+Al editor	To editor	Vers l’éditeur
+Copia la DDL al editor SQL	Copies the DDL into the SQL editor	Copie le DDL dans l’éditeur SQL
+DDL copiada.	DDL copied.	DDL copié.

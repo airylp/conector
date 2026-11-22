@@ -29,8 +29,12 @@ portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
 
 En la interfaz: lista agrupada con filtro, plantillas (PostgreSQL, MySQL,
 MariaDB, Oracle, SQL Server, DB2, Firebird, H2, SQLite), descarga del driver
-desde Maven Central, prueba con metadatos y errores con SQLState y causas, y
-explorador de esquemas → tablas → columnas. Español, inglés y francés.
+desde Maven Central (carpeta `drivers` del catálogo, se abre con 🗁), prueba en
+ventana aparte con metadatos o el error completo (SQLState, causas, errores
+encadenados; copiable), y explorador de esquemas → tablas: clic = DDL (la nativa
+en MySQL/MariaDB, Oracle, SQLite y vistas; si no, generada con columnas, clave
+primaria, foráneas, índices y comentarios), doble clic = SELECT, menú = columnas.
+Español, inglés y francés.
 
 ### Consola SQL
 
