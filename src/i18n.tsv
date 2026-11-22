@@ -279,3 +279,17 @@ Renombrar {n} archivos .conexion como sus conexiones	Rename {n} .conexion files 
 Cada archivo pasa a llamarse como la conexión en la lista	Each file gets the name the connection has in the list	Chaque fichier prend le nom de la connexion dans la liste
 Renombrados {n}; fallaron {m}.	Renamed {n}; {m} failed.	{n} renommés ; {m} en échec.
 Renombrados {n} archivos.	Renamed {n} files.	{n} fichiers renommés.
+Acerca de conector	About conector	À propos de conector
+Autor	Author	Auteur
+Sitio web	Website	Site web
+Licencia	License	Licence
+MIT · © 2026 {user}	MIT · © 2026 {user}	MIT · © 2026 {user}
+ver	view	voir
+Hecho con	Made with	Fait avec
+Configuración	Settings folder	Configuration
+Abrir carpeta	Open folder	Ouvrir le dossier
+Versiones	Releases	Versions
+Reportar un problema	Report a problem	Signaler un problème
+Código fuente	Source code	Code source
+Probador de conexiones JDBC con consola SQL	JDBC connection tester with SQL console	Testeur de connexions JDBC avec console SQL
+{ruta} (sin arrancar)	{ruta} (not started)	{ruta} (non démarré)

@@ -385,6 +385,9 @@ pub struct App {
     /// Monitor donde estaba la ventana la última vez (lo pone `main`).
     pub saved_monitor: Option<(f32, f32)>,
     window_checked: bool,
+    /// Ventana «Acerca de» abierta (y su ícono, creado al abrirla).
+    show_about: bool,
+    about_icon: Option<TextureHandle>,
     /// Paneles visibles: lista de conexiones y datos de la conexión.
     pub show_sidebar: bool,
     pub show_form: bool,
@@ -466,6 +469,8 @@ impl App {
             window: None,
             saved_monitor: None,
             window_checked: false,
+            show_about: false,
+            about_icon: None,
             show_sidebar: true,
             show_form: true,
             java: None,
@@ -1937,6 +1942,9 @@ impl App {
                         update_clicked = true;
                     }
                 }
+                if ui.add(Button::new("ℹ").selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
+                    self.show_about = !self.show_about;
+                }
                 if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
                     self.settings_edit = self.settings.clone();
                     self.pass_edit.vars = store::vars_text();
@@ -3066,6 +3074,110 @@ impl App {
         }
     }
 
+    /// «Acerca de»: versión, Java, carpetas, licencia y enlaces al proyecto en GitHub.
+    fn about_window(&mut self, ctx: &Context) {
+        if !self.show_about {
+            return;
+        }
+        let icon = self
+            .about_icon
+            .get_or_insert_with(|| {
+                let n = 128;
+                let img = ColorImage::from_rgba_unmultiplied([n, n], &crate::icon::rgba(n));
+                ctx.load_texture("acerca-icono", img, TextureOptions::LINEAR)
+            })
+            .clone();
+        let mut close = false;
+        let mut update = false;
+        let link = |ui: &mut Ui, text: &str, url: &str| {
+            if ui.link(text).on_hover_text(url).clicked() {
+                open_url(url);
+            }
+        };
+        let java = self.java.clone().unwrap_or_else(|| tf!("{ruta} (sin arrancar)", ruta = bridge::java_path(&self.settings.java).display()));
+        let config = store::config_dir().map(|d| d.display().to_string()).unwrap_or_default();
+        let catalog = self.catalog.dir.display().to_string();
+        let modal = Modal::new(Id::NULL.with("about")).show(ctx, |ui| {
+            ui.set_width(480.0);
+            ui.horizontal(|ui| {
+                ui.add(Image::new(&icon).fit_to_exact_size(vec2(64.0, 64.0)));
+                ui.vertical(|ui| {
+                    ui.heading("conector");
+                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
+                    ui.label(RichText::new(t!("Probador de conexiones JDBC con consola SQL")).weak());
+                });
+            });
+            ui.add_space(8.0);
+            ui.separator();
+            Grid::new("about-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
+                ui.label(RichText::new(t!("Autor")).strong());
+                ui.horizontal(|ui| {
+                    ui.label(GITHUB_NAME);
+                    link(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
+                });
+                ui.end_row();
+                ui.label(RichText::new("GitHub").strong());
+                link(ui, &format!("github.com/{GITHUB_USER}/{GITHUB_REPO}"), &repo_url(""));
+                ui.end_row();
+                ui.label(RichText::new(t!("Sitio web")).strong());
+                link(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG);
+                ui.end_row();
+                ui.label(RichText::new(t!("Licencia")).strong());
+                ui.horizontal(|ui| {
+                    ui.label(tf!("MIT · © 2026 {user}", user = GITHUB_USER));
+                    link(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
+                });
+                ui.end_row();
+                ui.label(RichText::new(t!("Hecho con")).strong());
+                ui.label("Rust · egui / eframe · Java (JDBC)");
+                ui.end_row();
+                ui.label(RichText::new("Java").strong());
+                ui.add(Label::new(java).truncate());
+                ui.end_row();
+                ui.label(RichText::new(t!("Configuración")).strong());
+                ui.horizontal(|ui| {
+                    ui.add(Label::new(RichText::new(&config).weak()).truncate());
+                    if !config.is_empty() && ui.small_button("🗁").on_hover_text(t!("Abrir carpeta")).clicked() {
+                        open_url(&config);
+                    }
+                });
+                ui.end_row();
+                ui.label(RichText::new(t!("Catálogo")).strong());
+                ui.horizontal(|ui| {
+                    ui.add(Label::new(RichText::new(&catalog).weak()).truncate());
+                    if ui.small_button("🗁").on_hover_text(t!("Abrir carpeta")).clicked() {
+                        open_url(&catalog);
+                    }
+                });
+                ui.end_row();
+            });
+            ui.separator();
+            ui.horizontal(|ui| {
+                link(ui, t!("Versiones"), &repo_url("/releases"));
+                ui.label("·");
+                link(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
+                ui.label("·");
+                link(ui, t!("Código fuente"), &repo_url(""));
+            });
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if crate::update::SUPPORTED && ui.button(t!("Buscar actualizaciones…")).clicked() {
+                    update = true;
+                    close = true;
+                }
+                if ui.button(t!("Cerrar")).clicked() {
+                    close = true;
+                }
+            });
+        });
+        if close || modal.should_close() {
+            self.show_about = false;
+        }
+        if update {
+            self.open_updater(ctx);
+        }
+    }
+
     /// Ventana con los datos de la conexión elegida.
     fn form_window(&mut self, ctx: &Context) {
         let Some(f) = &self.form else { return };
@@ -3246,6 +3358,9 @@ impl App {
             if std::env::var_os("CONECTOR_BORRAR").is_some() {
                 self.confirm_delete = true;
             }
+            if std::env::var_os("CONECTOR_ACERCA").is_some() {
+                self.show_about = true;
+            }
             if std::env::var_os("CONECTOR_RENOMBRAR").is_some() {
                 self.rename_all_files();
             }
@@ -3374,6 +3489,20 @@ fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usiz
         }
     }
     job
+}
+
+const GITHUB_USER: &str = "airylp";
+const GITHUB_NAME: &str = "Airy";
+const GITHUB_REPO: &str = "conector";
+const GITHUB_BLOG: &str = "https://decodigo.com";
+
+fn repo_url(rest: &str) -> String {
+    format!("https://github.com/{GITHUB_USER}/{GITHUB_REPO}{rest}")
+}
+
+/// Abre un enlace o una carpeta con el programa del sistema (sin esperar).
+fn open_url(url: &str) {
+    let _ = open_in_file_manager(std::path::Path::new(url));
 }
 
 /// Abre una carpeta con el gestor de archivos del sistema (sin esperar).
@@ -3559,7 +3688,10 @@ impl eframe::App for App {
         self.poll_bridge();
         self.check_timeouts(&ctx);
         self.debug_capture(&ctx);
-        self.escape_closes(&ctx);
+        // Con «Acerca de» abierto, Escape es para él (lo cierra el propio modal).
+        if !self.show_about {
+            self.escape_closes(&ctx);
+        }
         self.track_window(&ctx);
         // Pruebas: CONECTOR_CERRAR_TRAS=N cierra la ventana (como el usuario) en el fotograma N.
         if let Some(n) = std::env::var("CONECTOR_CERRAR_TRAS").ok().and_then(|v| v.parse::<u64>().ok()) {
@@ -3599,6 +3731,7 @@ impl eframe::App for App {
         if !matches!(self.test, TestState::Idle) {
             self.test_window(&ctx);
         }
+        self.about_window(&ctx);
         if self.show_settings {
             self.settings_window(&ctx);
         }
