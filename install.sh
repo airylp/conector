@@ -47,6 +47,7 @@ if [ "$OS" = "Darwin" ]; then
 else
     BIN_DIR="${CONECTOR_DESTINO:-$HOME/.local/bin}"
     DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
+    ICON_SIZES="16 32 64 128 256 512"
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/conector"
     CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/conector-compilacion"
 fi
@@ -133,9 +134,10 @@ if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
             fi
         done
     else
-        for f in "$BIN_DIR/conector" "$DATA/applications/conector.desktop" "$DATA/icons/hicolor/256x256/apps/conector.png"; do
+        for f in "$BIN_DIR/conector" "$DATA/applications/conector.desktop"; do
             if [ -e "$f" ]; then rm -f "$f" && info "$(m "Quitado $f" "Removed $f" "Supprimé : $f")"; fi
         done
+        for t in $ICON_SIZES; do rm -f "$DATA/icons/hicolor/${t}x${t}/apps/conector.png"; done
         command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
     fi
     rm -rf "$CACHE"
@@ -202,12 +204,21 @@ if [ "$OS" = "Darwin" ]; then
 else
     info "$(m 'Compilando (la primera vez tarda unos minutos)' 'Building (the first time takes a few minutes)' 'Compilation (la première fois prend quelques minutes)')"
     (cd "$TMP" && cargo build --release --locked)
-    mkdir -p "$BIN_DIR" "$DATA/applications" "$DATA/icons/hicolor/256x256/apps"
+    mkdir -p "$BIN_DIR" "$DATA/applications"
     # Copia y renombra: el ejecutable en uso sigue funcionando hasta reiniciarlo.
     cp "$CACHE/release/conector" "$BIN_DIR/.conector.nuevo"
     chmod +x "$BIN_DIR/.conector.nuevo"
     mv -f "$BIN_DIR/.conector.nuevo" "$BIN_DIR/conector"
-    "$BIN_DIR/conector" --iconset "$TMP/iconos" && cp "$TMP/iconos/icon_256x256.png" "$DATA/icons/hicolor/256x256/apps/conector.png"
+    # Iconos en varios tamaños; cada uno se escribe aparte y se renombra para que
+    # GNOME nunca lea (y guarde en caché) un PNG a medio escribir.
+    if "$BIN_DIR/conector" --iconset "$TMP/iconos"; then
+        for t in $ICON_SIZES; do
+            case $t in 64) f=icon_32x32@2x.png ;; *) f="icon_${t}x${t}.png" ;; esac
+            d="$DATA/icons/hicolor/${t}x${t}/apps"
+            mkdir -p "$d" && cp "$TMP/iconos/$f" "$d/.conector.png.nuevo" && mv -f "$d/.conector.png.nuevo" "$d/conector.png"
+        done
+        touch "$DATA/icons/hicolor" 2>/dev/null || true
+    fi
     cat > "$DATA/applications/conector.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
