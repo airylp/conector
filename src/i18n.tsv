@@ -40,7 +40,7 @@ Columnas de {tabla}: {n}	Columns of {tabla}: {n}	Colonnes de {tabla} : {n}
 Java portátil listo: {ruta}	Portable Java ready: {ruta}	Java portable prêt : {ruta}
 Driver descargado: {ruta}	Driver downloaded: {ruta}	Pilote téléchargé : {ruta}
 No se pudieron guardar los ajustes: {e}	Could not save the settings: {e}	Impossible d'enregistrer les réglages : {e}
-＋ Nueva	＋ New	＋ Nouvelle
++ Nueva	+ New	+ Nouvelle
 💾 Guardar	💾 Save	💾 Enregistrer
 ⧉ Duplicar	⧉ Duplicate	⧉ Dupliquer
 🗑 Borrar	🗑 Delete	🗑 Supprimer
@@ -54,7 +54,7 @@ JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración	Eclipse Temur
 ☕ No se encuentra Java	☕ Java not found	☕ Java introuvable
 Java sin arrancar (arranca al probar)	Java not started (starts when testing)	Java non démarré (démarre au test)
 🔎 Filtrar	🔎 Filter	🔎 Filtrer
-Sin conexiones. Pulsa «＋ Nueva».	No connections. Press “＋ New”.	Aucune connexion. Appuyez sur « ＋ Nouvelle ».
+Sin conexiones. Pulsa «+ Nueva».	No connections. Press “+ New”.	Aucune connexion. Appuyez sur « + Nouvelle ».
 🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:	🔒 This catalog has encrypted shared passwords. Shared passphrase:	🔒 Ce catalogue contient des mots de passe partagés chiffrés. Phrase commune :
 Recordar en este equipo	Remember on this computer	Retenir sur cet ordinateur
 Desbloquear	Unlock	Déverrouiller
@@ -251,7 +251,7 @@ Prueba de conexión	Connection test	Test de connexion
 Prueba de conexión: {nombre}	Connection test: {nombre}	Test de connexion : {nombre}
 ▶ Probar otra vez	▶ Test again	▶ Tester à nouveau
 Cerrar	Close	Fermer
-Elige una conexión en el panel lateral para ver sus datos, o crea una con «＋ Nueva».	Pick a connection in the side panel to see its details, or create one with “＋ New”.	Choisissez une connexion dans le panneau latéral pour voir ses détails, ou créez-en une avec « ＋ Nouvelle ».
+Elige una conexión en el panel lateral para ver sus datos, o crea una con «+ Nueva».	Pick a connection in the side panel to see its details, or create one with “+ New”.	Choisissez une connexion dans le panneau latéral pour voir ses détails, ou créez-en une avec « + Nouvelle ».
 Abrir la carpeta de drivers descargados	Open the downloaded drivers folder	Ouvrir le dossier des pilotes téléchargés
 Drivers	Drivers	Pilotes
 🗁 Abrir carpeta	🗁 Open folder	🗁 Ouvrir le dossier

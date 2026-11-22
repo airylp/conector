@@ -1920,7 +1920,7 @@ impl App {
                 self.show_form = !self.show_form;
             }
             ui.separator();
-            if ui.button(t!("＋ Nueva")).clicked() {
+            if ui.button(t!("+ Nueva")).clicked() {
                 self.new_connection();
             }
             let dirty = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
@@ -2063,7 +2063,7 @@ impl App {
                 }
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
-                ui.weak(t!("Sin conexiones. Pulsa «＋ Nueva»."));
+                ui.weak(t!("Sin conexiones. Pulsa «+ Nueva»."));
             }
             if let Some(g) = toggle {
                 if !self.folded_groups.remove(&g) {
@@ -2115,7 +2115,7 @@ impl App {
         let has_key = self.key.is_some();
         let driver_dl = self.driver_dl.as_ref().map(|(s, _)| s.lock().unwrap().clone());
         let Some(f) = &mut self.form else {
-            ui.centered_and_justified(|ui| ui.weak(t!("Elige una conexión en el panel lateral para ver sus datos, o crea una con «＋ Nueva».")));
+            ui.centered_and_justified(|ui| ui.weak(t!("Elige una conexión en el panel lateral para ver sus datos, o crea una con «+ Nueva».")));
             return;
         };
         if f.external {
