@@ -270,3 +270,5 @@ Servicio	Service	Service
 Base (ruta o mem:nombre)	Database (path or mem:name)	Base (chemin ou mem:nom)
 Ruta de la base	Database path	Chemin de la base
 URL con formato especial: edítala directamente.	URL in a special format: edit it directly.	URL au format spécial : modifiez-la directement.
+Mostrar u ocultar la lista de conexiones (Ctrl+B)	Show or hide the connection list (Ctrl+B)	Afficher ou masquer la liste des connexions (Ctrl+B)
+Mostrar u ocultar los datos de la conexión; oculto, el explorador y la consola ocupan todo (Ctrl+Mayús+B)	Show or hide the connection details; when hidden, the explorer and console fill the window (Ctrl+Shift+B)	Afficher ou masquer les détails de la connexion ; masqués, l’explorateur et la console occupent tout (Ctrl+Maj+B)

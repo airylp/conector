@@ -96,17 +96,36 @@ fn main() -> ExitCode {
 
 fn gui() -> ExitCode {
     let testing = std::env::var_os("CONECTOR_CAPTURA").is_some();
+    // Reabrir donde estaba (mismo monitor), salvo en pruebas.
+    // (CONECTOR_VENTANA=1: también en pruebas.)
+    let saved = if testing && std::env::var_os("CONECTOR_VENTANA").is_none() { None } else { store::WindowState::load() };
+    let viewport_extra = |v: eframe::egui::ViewportBuilder| match &saved {
+        Some(w) => {
+            let v = if let Some((x, y)) = w.pos { v.with_position([x, y]) } else { v };
+            v.with_maximized(w.maximized)
+        }
+        None => v,
+    };
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_active(!testing)
             .with_title("Conector")
             .with_app_id("conector")
-            .with_inner_size([1180.0, 820.0])
+            .with_inner_size(saved.as_ref().map_or([1180.0, 820.0], |w| [w.size.0, w.size.1]))
             .with_min_inner_size([760.0, 520.0])
             .with_icon(std::sync::Arc::new(icon::app_icon())),
         ..Default::default()
     };
-    match eframe::run_native("conector", options, Box::new(|cc| Ok(Box::new(app::App::new(cc))))) {
+    let options = eframe::NativeOptions { viewport: viewport_extra(options.viewport), ..options };
+    let saved_monitor = saved.as_ref().and_then(|w| w.monitor);
+    let (hide_sidebar, hide_form) = saved.as_ref().map_or((false, false), |w| (w.hide_sidebar, w.hide_form));
+    match eframe::run_native("conector", options, Box::new(move |cc| {
+        let mut app = app::App::new(cc);
+        app.saved_monitor = saved_monitor;
+        app.show_sidebar = !hide_sidebar;
+        app.show_form = !hide_form;
+        Ok(Box::new(app))
+    })) {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("No se pudo abrir la ventana: {e}");

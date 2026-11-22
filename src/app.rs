@@ -380,6 +380,14 @@ pub struct App {
     filter: String,
     /// Grupos plegados en el panel lateral.
     folded_groups: std::collections::HashSet<String>,
+    /// Posición/tamaño actuales de la ventana (se guardan al salir).
+    window: Option<store::WindowState>,
+    /// Monitor donde estaba la ventana la última vez (lo pone `main`).
+    pub saved_monitor: Option<(f32, f32)>,
+    window_checked: bool,
+    /// Paneles visibles: lista de conexiones y datos de la conexión.
+    pub show_sidebar: bool,
+    pub show_form: bool,
     bridge: Bridge,
     java: Option<String>,
     java_ok: bool,
@@ -455,6 +463,11 @@ impl App {
             form: None,
             filter: String::new(),
             folded_groups: Default::default(),
+            window: None,
+            saved_monitor: None,
+            window_checked: false,
+            show_sidebar: true,
+            show_form: true,
             java: None,
             java_log: String::new(),
             pending: HashMap::new(),
@@ -592,6 +605,7 @@ impl App {
     }
 
     fn new_connection(&mut self) {
+        self.show_form = true;
         let mut f = Form::new_conn(t!("Nueva conexión").into());
         f.conn.id = self.catalog.free_id(&f.conn.name);
         self.selected = Some(f.conn.id.clone());
@@ -1812,6 +1826,13 @@ impl App {
         let ctx = ui.ctx().clone();
         let mut update_clicked = false;
         ui.horizontal(|ui| {
+            if ui.selectable_label(self.show_sidebar, "◧").on_hover_text(t!("Mostrar u ocultar la lista de conexiones (Ctrl+B)")).clicked() {
+                self.show_sidebar = !self.show_sidebar;
+            }
+            if ui.selectable_label(self.show_form, "▤").on_hover_text(t!("Mostrar u ocultar los datos de la conexión; oculto, el explorador y la consola ocupan todo (Ctrl+Mayús+B)")).clicked() {
+                self.show_form = !self.show_form;
+            }
+            ui.separator();
             if ui.button(t!("＋ Nueva")).clicked() {
                 self.new_connection();
             }
@@ -2915,6 +2936,46 @@ impl App {
         }
     }
 
+    /// Recuerda dónde está la ventana. La primera vez que se sabe el monitor, si no
+    /// es el de la última vez (se desconectó), la lleva a una esquina del principal.
+    fn track_window(&mut self, ctx: &Context) {
+        let (outer, inner, maximized, monitor) = ctx.input(|i| {
+            let v = i.viewport();
+            (v.outer_rect, v.inner_rect, v.maximized.unwrap_or(false), v.monitor_size)
+        });
+        let monitor = monitor.map(|m| (m.x, m.y));
+        if !self.window_checked && monitor.is_some() {
+            self.window_checked = true;
+            if let (Some(old), Some(now)) = (self.saved_monitor, monitor) {
+                if (old.0 - now.0).abs() > 1.0 || (old.1 - now.1).abs() > 1.0 {
+                    ctx.send_viewport_cmd(ViewportCommand::OuterPosition(pos2(40.0, 40.0)));
+                }
+            }
+        }
+        let w = self.window.get_or_insert_with(Default::default);
+        w.maximized = maximized;
+        w.hide_sidebar = !self.show_sidebar;
+        w.hide_form = !self.show_form;
+        if !maximized {
+            // Maximizada: se guarda el tamaño y sitio normales de antes.
+            if let Some(r) = inner {
+                w.size = (r.width(), r.height());
+            }
+            w.pos = outer.map(|r| (r.min.x, r.min.y));
+            if monitor.is_some() {
+                w.monitor = monitor;
+            }
+        } else if w.monitor.is_none() {
+            w.monitor = monitor;
+        }
+        if w.size.0 < 200.0 {
+            // Arrancó maximizada sin tamaño normal guardado: el actual sirve.
+            if let Some(r) = inner {
+                w.size = (r.width(), r.height());
+            }
+        }
+    }
+
     fn is_open(&self, w: Win) -> bool {
         match w {
             Win::Delete => self.confirm_delete,
@@ -3340,6 +3401,9 @@ fn boxed(ui: &mut Ui, w: f32, h: f32, widget: impl Widget) -> Response {
 impl eframe::App for App {
     fn on_exit(&mut self) {
         crate::tunnel::close_all();
+        if let Some(w) = self.window.as_ref().filter(|_| std::env::var_os("CONECTOR_CAPTURA").is_none() || std::env::var_os("CONECTOR_VENTANA").is_some()) {
+            w.save();
+        }
     }
 
     /// Pruebas: CONECTOR_TECLAS='40:esc,60:esc' pulsa Escape en esos fotogramas.
@@ -3362,8 +3426,23 @@ impl eframe::App for App {
         self.check_timeouts(&ctx);
         self.debug_capture(&ctx);
         self.escape_closes(&ctx);
+        self.track_window(&ctx);
+        // Pruebas: CONECTOR_CERRAR_TRAS=N cierra la ventana (como el usuario) en el fotograma N.
+        if let Some(n) = std::env::var("CONECTOR_CERRAR_TRAS").ok().and_then(|v| v.parse::<u64>().ok()) {
+            if ctx.cumulative_frame_nr() >= n {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            } else {
+                ctx.request_repaint();
+            }
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND | Modifiers::SHIFT, Key::B)) {
+            self.show_form = !self.show_form;
+        }
+        if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::B)) {
+            self.show_sidebar = !self.show_sidebar;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::T)) && self.form.is_some() {
             self.test();
@@ -3375,11 +3454,18 @@ impl eframe::App for App {
             ui.add_space(1.0);
         });
         Panel::bottom("estado").show(ui, |ui| self.status_bar(ui));
-        Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
-        Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
-        CentralPanel::default().show(ui, |ui| {
-            ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
-        });
+        if self.show_sidebar {
+            Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
+        }
+        if self.show_form {
+            Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
+            CentralPanel::default().show(ui, |ui| {
+                ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
+            });
+        } else {
+            // Sin los datos de la conexión: explorador y consola ocupan todo.
+            CentralPanel::default().show(ui, |ui| self.console_ui(ui));
+        }
         if !matches!(self.test, TestState::Idle) {
             self.test_window(&ctx);
         }

@@ -738,3 +738,86 @@ mod tests {
         let _ = std::fs::remove_dir_all(dir);
     }
 }
+
+/// Posición y tamaño de la ventana (`<config>/ventana.txt`) para reabrir donde estaba.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowState {
+    /// Esquina superior izquierda (coordenadas globales); `None` si el sistema no la da (Wayland).
+    pub pos: Option<(f32, f32)>,
+    pub size: (f32, f32),
+    pub maximized: bool,
+    /// Tamaño del monitor donde estaba: si al abrir es otro, ese monitor ya no está.
+    pub monitor: Option<(f32, f32)>,
+    /// Lista de conexiones / datos de la conexión ocultos.
+    pub hide_sidebar: bool,
+    pub hide_form: bool,
+}
+
+impl WindowState {
+    fn path() -> Option<PathBuf> {
+        config_dir().map(|d| d.join("ventana.txt"))
+    }
+
+    pub fn load() -> Option<WindowState> {
+        Self::parse(&std::fs::read_to_string(Self::path()?).ok()?)
+    }
+
+    pub fn parse(text: &str) -> Option<WindowState> {
+        let mut w = WindowState::default();
+        let pair = |v: &str| -> Option<(f32, f32)> {
+            let (a, b) = v.split_once(',')?;
+            let (a, b) = (a.trim().parse::<f32>().ok()?, b.trim().parse::<f32>().ok()?);
+            (a.is_finite() && b.is_finite()).then_some((a, b))
+        };
+        for line in text.lines() {
+            let Some((k, v)) = line.split_once('=') else { continue };
+            match k.trim() {
+                "posicion" => w.pos = pair(v),
+                "tamano" => w.size = pair(v)?,
+                "maximizada" => w.maximized = v.trim() == "si",
+                "monitor" => w.monitor = pair(v),
+                "ocultar_lista" => w.hide_sidebar = v.trim() == "si",
+                "ocultar_datos" => w.hide_form = v.trim() == "si",
+                _ => {}
+            }
+        }
+        (w.size.0 >= 200.0 && w.size.1 >= 150.0).then_some(w)
+    }
+
+    pub fn text(&self) -> String {
+        let mut t = format!("tamano={},{}\nmaximizada={}\n", self.size.0, self.size.1, if self.maximized { "si" } else { "no" });
+        if let Some((x, y)) = self.pos {
+            t.push_str(&format!("posicion={x},{y}\n"));
+        }
+        let yn = |b: bool| if b { "si" } else { "no" };
+        t.push_str(&format!("ocultar_lista={}\nocultar_datos={}\n", yn(self.hide_sidebar), yn(self.hide_form)));
+        if let Some((a, b)) = self.monitor {
+            t.push_str(&format!("monitor={a},{b}\n"));
+        }
+        t
+    }
+
+    pub fn save(&self) {
+        if let Some(p) = Self::path() {
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = write_atomic(&p, self.text().as_bytes(), false);
+        }
+    }
+}
+
+#[cfg(test)]
+mod window_tests {
+    use super::WindowState;
+
+    #[test]
+    fn ventana_ida_y_vuelta() {
+        let w = WindowState { pos: Some((1920.0, 40.0)), size: (1180.0, 820.0), maximized: true, monitor: Some((2560.0, 1440.0)), hide_sidebar: true, hide_form: false };
+        assert_eq!(WindowState::parse(&w.text()), Some(w));
+        let sin_pos = WindowState { pos: None, size: (900.0, 600.0), maximized: false, monitor: None, hide_sidebar: false, hide_form: true };
+        assert_eq!(WindowState::parse(&sin_pos.text()), Some(sin_pos));
+        assert_eq!(WindowState::parse("tamano=10,10\n"), None);
+        assert_eq!(WindowState::parse("posicion=a,b\n"), None);
+    }
+}
