@@ -56,7 +56,7 @@ Name: "{autoprograms}\conector"; Filename: "{app}\conector.exe"
 Name: "{autodesktop}\conector"; Filename: "{app}\conector.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\conector.exe"; Description: "{cm:LaunchProgram,conector}"; Flags: nowait postinstall
+Filename: "{app}\conector.exe"; Description: "{cm:LaunchProgram,conector}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 // Guarda el idioma elegido en el instalador como idioma de la app (si aún no

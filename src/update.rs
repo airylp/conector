@@ -302,11 +302,15 @@ impl Updater {
 /// cuando la app ya terminó y él mismo vuelve a abrir conector.
 pub fn relaunch_after_exit(installed: &std::path::Path) -> std::io::Result<()> {
     if WINDOWS {
+        // El instalador no abre conector en modo silencioso (`skipifsilent`): lo abre
+        // este script al terminar, con la misma ruta (la instalación conserva la carpeta).
+        let exe = std::env::current_exe().unwrap_or_default();
         let ps = format!(
             // Al terminar el instalador se borra (estaba en la carpeta temporal).
-            "Wait-Process -Id {} -Timeout 30 -ErrorAction SilentlyContinue; Start-Process -Wait -FilePath '{f}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART'; Remove-Item -LiteralPath '{f}' -ErrorAction SilentlyContinue",
+            "Wait-Process -Id {} -Timeout 30 -ErrorAction SilentlyContinue; Start-Process -Wait -FilePath '{f}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART'; Remove-Item -LiteralPath '{f}' -ErrorAction SilentlyContinue; Start-Process -FilePath '{e}'",
             std::process::id(),
-            f = installed.display().to_string().replace('\'', "''")
+            f = installed.display().to_string().replace('\'', "''"),
+            e = exe.display().to_string().replace('\'', "''")
         );
         let mut c = Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &ps]);
