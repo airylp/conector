@@ -514,6 +514,17 @@ public final class ConectorHelper {
             chain.append(t.getClass().getName()).append(": ").append(t.getMessage());
         }
         if (chain.length() > 0) out.add("causas=" + chain);
+        // Errores encadenados (DB2, SQL Server, lotes): la causa real suele estar aquí.
+        if (e instanceof SQLException) {
+            StringBuilder next = new StringBuilder();
+            SQLException n = ((SQLException) e).getNextException();
+            for (int i = 0; n != null && i < 8; i++, n = n.getNextException()) {
+                if (next.length() > 0) next.append('\n');
+                next.append(n.getClass().getName()).append(": ").append(n.getMessage());
+                if (n.getSQLState() != null) next.append(" [").append(n.getSQLState()).append(']');
+            }
+            if (next.length() > 0) out.add("siguientes=" + next);
+        }
         send("error", id, out.toArray(new String[0]));
     }
 

@@ -151,7 +151,6 @@ Borrar	Delete	Supprimer
 Cancelar	Cancel	Annuler
 Catálogo (clic: copiar la ruta)	Catalog (click: copy the path)	Catalogue (clic : copier le chemin)
 📡 Sirviendo en {dir}	📡 Serving on {dir}	📡 Service sur {dir}
-Detalle	Details	Détail
 Copiado: fila {n}, {columna}	Copied: row {n}, {columna}	Copié : ligne {n}, {columna}
 Cifrar con TLS (HTTPS)	Encrypt with TLS (HTTPS)	Chiffrer avec TLS (HTTPS)
 Certificado	Certificate	Certificat
@@ -246,3 +245,7 @@ No se pudo abrir la versión nueva: {e}	Could not open the new version: {e}	Impo
 ⬆ Actualizando…	⬆ Updating…	⬆ Mise à jour…
 ⬆ Lista: reinicia	⬆ Ready: restart	⬆ Prête : redémarrez
 ⟳ Buscar actualizaciones…	⟳ Check for updates…	⟳ Rechercher des mises à jour…
+✖ Error	✖ Error	✖ Erreur
+📋 Copiar	📋 Copy	📋 Copier
+Copia el error completo	Copies the full error	Copie l’erreur complète
+Errores encadenados:	Chained errors:	Erreurs chaînées :

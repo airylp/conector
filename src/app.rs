@@ -54,6 +54,7 @@ impl ErrInfo {
             match k {
                 "mensaje" => {}
                 "causas" => detail.push_str(&format!("{}\n{v}\n", t!("Causas:"))),
+                "siguientes" => detail.push_str(&format!("{}\n{v}\n", t!("Errores encadenados:"))),
                 k => detail.push_str(&format!("{k}: {v}\n")),
             }
         }
@@ -2027,11 +2028,11 @@ impl App {
         if let Some(t) = want_driver {
             self.download_driver(&ctx, t);
         }
-        ui.add_space(6.0);
-        self.test_result(ui);
     }
 
+    /// Resultado de «Probar conexión», arriba del formulario para que siempre se vea.
     fn test_result(&mut self, ui: &mut Ui) {
+        let max_h = ui.available_height() * 0.45;
         match &self.test {
             TestState::Idle => {}
             TestState::Running { since, .. } => {
@@ -2065,7 +2066,7 @@ impl App {
                     }
                 });
             }
-            TestState::Err(e) => error_box(ui, e),
+            TestState::Err(e) => error_box(ui, e, max_h),
         }
     }
 
@@ -2171,18 +2172,6 @@ impl App {
         let mut run: Option<bool> = None;
         ui.horizontal(|ui| {
             ui.strong(t!("Consola SQL"));
-            match (&self.console.session, self.console.opening) {
-                (Some((_, n)), None) => {
-                    ui.colored_label(GREEN, format!("● {n}"));
-                }
-                (Some((_, n)), Some(_)) => {
-                    ui.spinner();
-                    ui.label(tf!("Conectando a {nombre}…", nombre = n));
-                }
-                _ => {
-                    ui.weak(t!("sin conectar (Ejecutar conecta con la seleccionada)"));
-                }
-            }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if self.console.session.is_some() && ui.button(t!("Desconectar")).clicked() {
                     self.disconnect();
@@ -2207,6 +2196,19 @@ impl App {
                     self.console.show_history = !self.console.show_history;
                 }
                 ui.checkbox(&mut self.console.keep_going, t!("Seguir tras un error"));
+                // Estado de la sesión en el hueco que queda (recortado si no cabe).
+                match (&self.console.session, self.console.opening) {
+                    (Some((_, n)), None) => {
+                        ui.add(Label::new(RichText::new(format!("● {n}")).color(GREEN)).truncate());
+                    }
+                    (Some((_, n)), Some(_)) => {
+                        ui.add(Label::new(tf!("Conectando a {nombre}…", nombre = n)).truncate());
+                        ui.spinner();
+                    }
+                    _ => {
+                        ui.add(Label::new(RichText::new(t!("sin conectar (Ejecutar conecta con la seleccionada)")).weak()).truncate());
+                    }
+                }
             });
         });
 
@@ -2284,7 +2286,8 @@ impl App {
         match self.console.active {
             None => {
                 if let Some(e) = &self.console.error {
-                    error_box(ui, e);
+                    let h = ui.available_height() * 0.6;
+                    error_box(ui, e, h);
                 }
                 ScrollArea::vertical().id_salt("mensajes").auto_shrink(false).show(ui, |ui| {
                     for (ok, line) in &self.console.log {
@@ -2926,13 +2929,28 @@ fn split_cols(m: &Msg) -> Vec<(String, String)> {
         .collect()
 }
 
-fn error_box(ui: &mut Ui, e: &ErrInfo) {
-    ui.colored_label(RED, RichText::new(format!("✖ {}", e.msg)).strong());
-    if !e.detail.is_empty() {
-        CollapsingHeader::new(t!("Detalle")).id_salt(("detalle", &e.msg)).show(ui, |ui| {
-            ui.add(Label::new(RichText::new(&e.detail).monospace().small()).wrap());
+/// Error completo: mensaje y detalle (SQLState, clase, causas) siempre visibles,
+/// seleccionables, con desplazamiento propio si es largo y botón para copiarlo.
+fn error_box(ui: &mut Ui, e: &ErrInfo, max_h: f32) {
+    Frame::group(ui.style()).stroke(Stroke::new(1.0, RED.gamma_multiply(0.6))).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            ui.colored_label(RED, RichText::new(t!("✖ Error")).strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.small_button(t!("📋 Copiar")).on_hover_text(t!("Copia el error completo")).clicked() {
+                    let text = if e.detail.is_empty() { e.msg.clone() } else { format!("{}\n{}", e.msg, e.detail) };
+                    ui.ctx().copy_text(text);
+                }
+            });
         });
-    }
+        ScrollArea::vertical().id_salt(("error", &e.msg)).max_height(max_h.max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
+            ui.add(Label::new(RichText::new(&e.msg).strong()).wrap().selectable(true));
+            if !e.detail.is_empty() {
+                ui.add_space(4.0);
+                ui.add(Label::new(RichText::new(&e.detail).monospace()).wrap().selectable(true));
+            }
+        });
+    });
 }
 
 fn tsv(cols: &[(String, String)], rows: &[Box<[Option<Box<str>>]>]) -> String {
@@ -3063,6 +3081,11 @@ impl eframe::App for App {
         Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         Panel::bottom("consola").resizable(true).default_size(400.0).min_size(160.0).show(ui, |ui| self.console_ui(ui));
         CentralPanel::default().show(ui, |ui| {
+            if !matches!(self.test, TestState::Idle) {
+                self.test_result(ui);
+                ui.add_space(4.0);
+                ui.separator();
+            }
             ScrollArea::vertical().id_salt("form_scroll").auto_shrink(false).show(ui, |ui| self.form_ui(ui));
         });
         if self.show_settings {
