@@ -15,6 +15,10 @@ rfd = "0.17.2"
 rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12", "logging"] }
 sha2 = "0.11.1"
 
+# Menú nativo de macOS (Acerca de, Ajustes, Salir…): ver src/macmenu.rs.
+[target.'cfg(target_os = "macos")'.dependencies]
+muda = { version = "0.21", default-features = false }
+
 # Ícono y datos de versión del .exe (solo al compilar en Windows): ver build.rs.
 [target.'cfg(windows)'.build-dependencies]
 winresource = { version = "0.1", default-features = false }

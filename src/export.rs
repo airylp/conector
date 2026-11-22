@@ -334,6 +334,14 @@ fn write_xlsx(path: &Path, rows_xml: &Path, ncols: usize) -> std::io::Result<()>
     let len = head.len() as u64 + std::fs::metadata(rows_xml)?.len() + tail.len() as u64;
 
     let tmp = path.with_extension("xlsx.tmp");
+    let r = write_zip(&tmp, head, rows_xml, tail, len, crc).and_then(|_| std::fs::rename(&tmp, path));
+    if r.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    r
+}
+
+fn write_zip(tmp: &Path, head: String, rows_xml: &Path, tail: String, len: u64, crc: u32) -> std::io::Result<()> {
     let mut z = Zip { out: BufWriter::new(File::create(&tmp)?), offset: 0, central: Vec::new(), count: 0 };
     z.add_bytes(
         "[Content_Types].xml",
@@ -358,8 +366,7 @@ fn write_xlsx(path: &Path, rows_xml: &Path, ncols: usize) -> std::io::Result<()>
     )?;
     let sheet = head.as_bytes().chain(File::open(rows_xml)?).chain(tail.as_bytes());
     z.add("xl/worksheets/sheet1.xml", sheet, len, crc)?;
-    z.finish()?;
-    std::fs::rename(&tmp, path)
+    z.finish()
 }
 
 // ---------- CSV de entrada ----------

@@ -388,6 +388,9 @@ pub struct App {
     /// Ventana «Acerca de» abierta (y su ícono, creado al abrirla).
     show_about: bool,
     about_icon: Option<TextureHandle>,
+    /// Menú de la barra de macOS.
+    #[cfg(target_os = "macos")]
+    menu: crate::macmenu::MacMenu,
     /// Paneles visibles: lista de conexiones y datos de la conexión.
     pub show_sidebar: bool,
     pub show_form: bool,
@@ -471,6 +474,8 @@ impl App {
             window_checked: false,
             show_about: false,
             about_icon: None,
+            #[cfg(target_os = "macos")]
+            menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
             show_sidebar: true,
             show_form: true,
             java: None,
@@ -1876,6 +1881,11 @@ impl App {
         apply_theme(ctx, &s);
         self.settings = s;
         apply_lang(&self.settings);
+        // El menú nativo se crea con los textos: se vuelve a crear.
+        #[cfg(target_os = "macos")]
+        {
+            self.menu = crate::macmenu::MacMenu::new(ctx);
+        }
         if java_changed {
             self.disconnect();
             self.bridge = new_bridge(ctx, &self.settings);
@@ -1942,13 +1952,16 @@ impl App {
                         update_clicked = true;
                     }
                 }
-                if ui.add(Button::new("ℹ").selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
+                // En macOS «Acerca de» está en el menú de la app.
+                if !cfg!(target_os = "macos") && ui.add(Button::new("ℹ").selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
                     self.show_about = !self.show_about;
                 }
                 if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
-                    self.settings_edit = self.settings.clone();
-                    self.pass_edit.vars = store::vars_text();
-                    self.show_settings = !self.show_settings;
+                    if self.show_settings {
+                        self.show_settings = false;
+                    } else {
+                        self.open_settings();
+                    }
                 }
                 if ui.button(t!("⟳ Reiniciar Java")).on_hover_text(t!("Corta conexiones colgadas")).clicked() {
                     self.restart_java();
@@ -2717,6 +2730,8 @@ impl App {
         let mut open_updater = false;
         let mut open_drivers = false;
         let mut rename_all = false;
+        let mut want_java = false;
+        let java_dl = self.java_dl.as_ref().map(|s| s.lock().unwrap().clone());
         let drivers = self.catalog.dir.join("drivers");
         Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
             ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
@@ -2777,6 +2792,31 @@ impl App {
                     ui.end_row();
                 });
                 ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
+                // Java portátil: siempre se puede descargar (o renovar) desde aquí.
+                ui.horizontal(|ui| {
+                    match &java_dl {
+                        Some(Dl::Running(msg)) => {
+                            ui.spinner();
+                            ui.label(msg.as_str());
+                        }
+                        other => {
+                            let label = if javadl::installed().is_some() { t!("⬇ Volver a descargar Java portátil") } else { t!("⬇ Descargar Java portátil") };
+                            if ui.button(label).on_hover_text(t!("JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración")).clicked() {
+                                want_java = true;
+                            }
+                            match other {
+                                Some(Dl::Failed(e)) => {
+                                    ui.colored_label(RED, e.as_str());
+                                }
+                                _ => {
+                                    if let Some(p) = javadl::installed() {
+                                        ui.add(Label::new(RichText::new(tf!("portátil: {ruta}", ruta = p.display())).weak()).truncate());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
                 ui.horizontal(|ui| {
                     ui.label(tf!("Versión {v}", v = crate::update::version_label()));
                     if crate::update::SUPPORTED && ui.button(t!("⟳ Buscar actualizaciones…")).clicked() {
@@ -2903,6 +2943,9 @@ impl App {
         }
         if rename_all {
             self.rename_all_files();
+        }
+        if want_java {
+            self.download_java(ctx);
         }
         match action {
             Some(1) => {
@@ -3072,6 +3115,28 @@ impl App {
                 w.size = (r.width(), r.height());
             }
         }
+    }
+
+    fn open_settings(&mut self) {
+        self.settings_edit = self.settings.clone();
+        self.pass_edit.vars = store::vars_text();
+        self.show_settings = true;
+    }
+
+    /// Opciones elegidas en el menú de macOS y marcas de «Ver».
+    #[cfg(target_os = "macos")]
+    fn mac_menu(&mut self, ctx: &Context) {
+        use crate::macmenu::{Cmd, inject};
+        for c in self.menu.poll() {
+            match c {
+                Cmd::About => self.show_about = true,
+                Cmd::Update => self.open_updater(ctx),
+                Cmd::Settings => self.open_settings(),
+                Cmd::Url(u) => open_url(u),
+                c => inject(ctx, c),
+            }
+        }
+        self.menu.sync([self.show_sidebar, self.show_form && self.form.is_some()]);
     }
 
     /// «Acerca de»: versión, Java, carpetas, licencia y enlaces al proyecto en GitHub.
@@ -3688,6 +3753,8 @@ impl eframe::App for App {
         self.poll_bridge();
         self.check_timeouts(&ctx);
         self.debug_capture(&ctx);
+        #[cfg(target_os = "macos")]
+        self.mac_menu(&ctx);
         // Con «Acerca de» abierto, Escape es para él (lo cierra el propio modal).
         if !self.show_about {
             self.escape_closes(&ctx);

@@ -293,3 +293,28 @@ Reportar un problema	Report a problem	Signaler un problème
 Código fuente	Source code	Code source
 Probador de conexiones JDBC con consola SQL	JDBC connection tester with SQL console	Testeur de connexions JDBC avec console SQL
 {ruta} (sin arrancar)	{ruta} (not started)	{ruta} (non démarré)
+Ajustes…	Settings…	Réglages…
+Salir de conector	Quit conector	Quitter conector
+Servicios	Services	Services
+Ocultar conector	Hide conector	Masquer conector
+Ocultar otros	Hide others	Masquer les autres
+Mostrar todo	Show all	Tout afficher
+Guardar	Save	Enregistrer
+Probar conexión	Test connection	Tester la connexion
+Deshacer	Undo	Annuler
+Rehacer	Redo	Rétablir
+Cortar	Cut	Couper
+Pegar	Paste	Coller
+Seleccionar todo	Select all	Tout sélectionner
+Edición	Edit	Édition
+Lista de conexiones	Connection list	Liste des connexions
+Datos de la conexión	Connection details	Détails de la connexion
+Ver	View	Présentation
+Pantalla completa	Full screen	Plein écran
+Ventana	Window	Fenêtre
+Minimizar	Minimize	Réduire
+Zoom	Zoom	Zoom
+Traer todo al frente	Bring all to front	Tout ramener au premier plan
+Ayuda	Help	Aide
+⬇ Volver a descargar Java portátil	⬇ Download portable Java again	⬇ Retélécharger Java portable
+portátil: {ruta}	portable: {ruta}	portable : {ruta}

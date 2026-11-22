@@ -114,6 +114,16 @@ pub fn download_java(state: &Shared, wake: Arc<dyn Fn() + Send + Sync>) {
         let _ = std::fs::remove_file(&archive);
         r.map_err(|e| format!("no se pudo descomprimir: {e}"))?;
         let java = installed().ok_or("no se encontró bin/java en lo descargado")?;
+        // Quedarse solo con el recién descargado (descargas anteriores o a medias).
+        let keep = std::fs::read_dir(&dir).ok().and_then(|_| java.ancestors().find(|a| a.parent() == Some(dir.as_path())).map(|a| a.to_path_buf()));
+        if let Some(keep) = keep {
+            for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p != keep && p.is_dir() {
+                    let _ = std::fs::remove_dir_all(p);
+                }
+            }
+        }
         Ok(java.display().to_string())
     });
 }

@@ -303,9 +303,10 @@ impl Updater {
 pub fn relaunch_after_exit(installed: &std::path::Path) -> std::io::Result<()> {
     if WINDOWS {
         let ps = format!(
-            "Wait-Process -Id {} -Timeout 30 -ErrorAction SilentlyContinue; Start-Process -FilePath '{}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART'",
+            // Al terminar el instalador se borra (estaba en la carpeta temporal).
+            "Wait-Process -Id {} -Timeout 30 -ErrorAction SilentlyContinue; Start-Process -Wait -FilePath '{f}' -ArgumentList '/SILENT','/SUPPRESSMSGBOXES','/NORESTART'; Remove-Item -LiteralPath '{f}' -ErrorAction SilentlyContinue",
             std::process::id(),
-            installed.display().to_string().replace('\'', "''")
+            f = installed.display().to_string().replace('\'', "''")
         );
         let mut c = Command::new("powershell");
         c.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", &ps]);

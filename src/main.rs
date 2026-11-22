@@ -9,6 +9,8 @@ mod crypto;
 mod export;
 mod icon;
 mod javadl;
+#[cfg(target_os = "macos")]
+mod macmenu;
 mod proto;
 mod server;
 mod sql;

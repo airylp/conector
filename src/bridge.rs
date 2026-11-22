@@ -365,6 +365,14 @@ fn helper_jar() -> Result<PathBuf, String> {
     if std::fs::metadata(&path).map(|m| m.len()).ok() != Some(JAR.len() as u64) {
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
         crate::store::write_atomic(&path, JAR, false).map_err(|e| e.to_string())?;
+        // Los de versiones anteriores sobran (si otra copia abierta aún usa el suyo, lo
+        // vuelve a escribir al reiniciar Java; en Windows, abierto, no se deja borrar).
+        for e in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+            let p = e.path();
+            if p != path && p.extension().is_some_and(|x| x == "jar") {
+                let _ = std::fs::remove_file(p);
+            }
+        }
     }
     Ok(path)
 }
