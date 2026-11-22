@@ -27,7 +27,8 @@ portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
     conector --clave ID            guarda la contraseña de ID cifrada en el catálogo
     conector --servir [DIR:PUERTO] servicio HTTP+JSON para otros programas
 
-En la interfaz: lista agrupada con filtro, plantillas (PostgreSQL, MySQL,
+En la interfaz: lista agrupada (grupos plegables) con filtro, campos de servidor,
+puerto y base que arman la URL (o se edita a mano), plantillas (PostgreSQL, MySQL,
 MariaDB, Oracle, SQL Server, DB2, Firebird, H2, SQLite), descarga del driver
 desde Maven Central (carpeta `drivers` del catálogo, se abre con 🗁), prueba en
 ventana aparte con metadatos o el error completo (SQLState, causas, errores

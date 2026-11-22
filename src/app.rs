@@ -19,15 +19,15 @@ use std::time::{Duration, Instant, SystemTime};
 
 /// Plantillas: nombre, clase del driver, URL de ejemplo, prefijo de URL.
 pub const TEMPLATES: &[(&str, &str, &str, &str)] = &[
-    ("PostgreSQL", "org.postgresql.Driver", "jdbc:postgresql://servidor:5432/basedatos", "jdbc:postgresql:"),
-    ("MySQL", "com.mysql.cj.jdbc.Driver", "jdbc:mysql://servidor:3306/basedatos", "jdbc:mysql:"),
-    ("MariaDB", "org.mariadb.jdbc.Driver", "jdbc:mariadb://servidor:3306/basedatos", "jdbc:mariadb:"),
-    ("Oracle", "oracle.jdbc.OracleDriver", "jdbc:oracle:thin:@//servidor:1521/servicio", "jdbc:oracle:"),
-    ("SQL Server", "com.microsoft.sqlserver.jdbc.SQLServerDriver", "jdbc:sqlserver://servidor:1433;databaseName=basedatos;encrypt=true;trustServerCertificate=true", "jdbc:sqlserver:"),
-    ("DB2", "com.ibm.db2.jcc.DB2Driver", "jdbc:db2://servidor:50000/basedatos", "jdbc:db2:"),
-    ("Firebird", "org.firebirdsql.jdbc.FBDriver", "jdbc:firebirdsql://servidor:3050/ruta/base.fdb", "jdbc:firebirdsql:"),
+    ("PostgreSQL", "org.postgresql.Driver", "jdbc:postgresql://localhost:5432/", "jdbc:postgresql:"),
+    ("MySQL", "com.mysql.cj.jdbc.Driver", "jdbc:mysql://localhost:3306/", "jdbc:mysql:"),
+    ("MariaDB", "org.mariadb.jdbc.Driver", "jdbc:mariadb://localhost:3306/", "jdbc:mariadb:"),
+    ("Oracle", "oracle.jdbc.OracleDriver", "jdbc:oracle:thin:@//localhost:1521/", "jdbc:oracle:"),
+    ("SQL Server", "com.microsoft.sqlserver.jdbc.SQLServerDriver", "jdbc:sqlserver://localhost:1433;encrypt=true;trustServerCertificate=true", "jdbc:sqlserver:"),
+    ("DB2", "com.ibm.db2.jcc.DB2Driver", "jdbc:db2://localhost:50000/", "jdbc:db2:"),
+    ("Firebird", "org.firebirdsql.jdbc.FBDriver", "jdbc:firebirdsql://localhost:3050/", "jdbc:firebirdsql:"),
     ("H2", "org.h2.Driver", "jdbc:h2:mem:prueba", "jdbc:h2:"),
-    ("SQLite", "org.sqlite.JDBC", "jdbc:sqlite:/ruta/archivo.db", "jdbc:sqlite:"),
+    ("SQLite", "org.sqlite.JDBC", "jdbc:sqlite:", "jdbc:sqlite:"),
 ];
 
 /// Plantilla que corresponde a una URL.
@@ -249,6 +249,8 @@ struct Explorer {
     loading: bool,
     error: Option<String>,
     filter: String,
+    /// Catálogo y esquema de la sesión (se abren solos al conectar).
+    current: (String, String),
 }
 
 struct Schema {
@@ -261,11 +263,14 @@ struct Schema {
 
 impl Schema {
     fn label(&self) -> &str {
-        if self.sch.is_empty() { &self.cat } else { &self.sch }
+        match self.qualifier() {
+            "" => t!("(tablas)"),
+            q => q,
+        }
     }
     /// Prefijo para el SQL: `esquema.` (o `catálogo.` en bases sin esquemas).
     fn qualifier(&self) -> &str {
-        self.label()
+        if self.sch.is_empty() { &self.cat } else { &self.sch }
     }
 }
 
@@ -294,6 +299,8 @@ enum Picked {
     ImportPath(std::path::PathBuf),
     Catalog(std::path::PathBuf),
     Jar(Vec<std::path::PathBuf>),
+    /// Archivo de base (SQLite/H2) para el campo «Archivo».
+    DbFile(std::path::PathBuf),
 }
 
 /// Ventana «Exportar».
@@ -371,6 +378,8 @@ pub struct App {
     selected: Option<String>,
     form: Option<Form>,
     filter: String,
+    /// Grupos plegados en el panel lateral.
+    folded_groups: std::collections::HashSet<String>,
     bridge: Bridge,
     java: Option<String>,
     java_ok: bool,
@@ -445,6 +454,7 @@ impl App {
             selected: None,
             form: None,
             filter: String::new(),
+            folded_groups: Default::default(),
             java: None,
             java_log: String::new(),
             pending: HashMap::new(),
@@ -1075,6 +1085,13 @@ impl App {
                 self.pending.remove(&m.id);
                 if matches!(self.test, TestState::Running { id, .. } if id == m.id) {
                     self.test = TestState::Ok(m.pairs().map(|(k, v)| (k.to_owned(), v.to_owned())).collect());
+                    // Conectó: abrir la sesión de la consola para ver las tablas en el explorador.
+                    let this = self.form.as_ref().map(|f| f.conn.id.clone());
+                    let busy = self.console.running.is_some() || self.console.opening.is_some() || self.import_job.is_some() || self.export_job.is_some();
+                    let same = self.console.session.is_some() && this.as_deref() == Some(self.console.session_conn.as_str());
+                    if !busy && !same && this.is_some() {
+                        self.connect();
+                    }
                 }
             }
             Some(Pending::Open) => {
@@ -1091,6 +1108,7 @@ impl App {
                 if let (Some(s), Some(sess)) = (m.get("sesion"), &mut self.console.session) {
                     sess.0 = s.to_owned();
                 }
+                self.explorer.current = (m.get("catalogo").unwrap_or("").to_owned(), m.get("esquema").unwrap_or("").to_owned());
                 self.console.info = tf!(
                     "Conectado en {ms} ms · {producto} {version}",
                     ms = m.get("ms").unwrap_or("?"),
@@ -1551,6 +1569,23 @@ impl App {
                 let (c, s) = (idx("TABLE_CAT"), idx("TABLE_SCHEM"));
                 self.explorer.schemas = rows.iter().map(|r| Schema { cat: get(r, c), sch: get(r, s), tables: None, loading: false, open: false }).collect();
                 self.explorer.loading = false;
+                // Se abre solo el esquema de la sesión (o el único que haya) con sus tablas.
+                // Sin esquemas ni catálogos (SQLite): uno sin nombre con todas las tablas.
+                if self.explorer.schemas.is_empty() {
+                    self.explorer.schemas.push(Schema { cat: String::new(), sch: String::new(), tables: None, loading: false, open: false });
+                }
+                let (cur_cat, cur_sch) = self.explorer.current.clone();
+                let eq = |a: &str, b: &str| !a.is_empty() && a.eq_ignore_ascii_case(b);
+                let only = self.explorer.schemas.len() == 1;
+                let pick = self.explorer.schemas.iter().position(|x| eq(&cur_sch, &x.sch) && (cur_cat.is_empty() || x.cat.is_empty() || x.cat.eq_ignore_ascii_case(&cur_cat)))
+                    .or_else(|| self.explorer.schemas.iter().position(|x| x.sch.is_empty() && eq(&cur_cat, &x.cat)))
+                    .or(if only { Some(0) } else { None });
+                if let Some(i) = pick {
+                    let x = &mut self.explorer.schemas[i];
+                    x.open = true;
+                    let req = Meta::Tables(x.cat.clone(), x.sch.clone());
+                    self.meta(req);
+                }
             }
             Meta::Tables(cat, sch) => {
                 let (n, k) = (idx("TABLE_NAME"), idx("TABLE_TYPE"));
@@ -1624,6 +1659,19 @@ impl App {
                     }
                 }
                 Picked::Catalog(dir) => self.settings_edit.catalog = dir.display().to_string(),
+                Picked::DbFile(file) => {
+                    if let Some(f) = &mut self.form {
+                        if let Some(mut p) = crate::urlparts::parse(&f.conn.url) {
+                            let mut path = file.display().to_string();
+                            // H2 no lleva la extensión del archivo en la URL.
+                            if p.prefix == "jdbc:h2:" {
+                                path = path.trim_end_matches(".mv.db").trim_end_matches(".h2.db").to_owned();
+                            }
+                            p.db = path;
+                            f.conn.url = crate::urlparts::build(&p);
+                        }
+                    }
+                }
                 Picked::Jar(files) => {
                     if let Some(f) = &mut self.form {
                         for file in files {
@@ -1661,6 +1709,17 @@ impl App {
             }
             self.status = tf!("Driver descargado: {ruta}", ruta = rel);
         }
+    }
+
+    fn pick_db_file(&self, ctx: &Context) {
+        let tx = self.dialog.0.clone();
+        let ctx = ctx.clone();
+        std::thread::spawn(move || {
+            if let Some(f) = rfd::FileDialog::new().pick_file() {
+                let _ = tx.send(Picked::DbFile(f));
+                ctx.request_repaint();
+            }
+        });
     }
 
     fn pick(&self, ctx: &Context, folder: bool) {
@@ -1842,27 +1901,40 @@ impl App {
         let mut clicked = None;
         let mut deselect = false;
         let new_unsaved = self.form.as_ref().filter(|f| f.mtime.is_none()).map(|f| f.conn.name.clone());
-        ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
+        ScrollArea::both().id_salt("lista_conexiones").auto_shrink(false).show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
             if let Some(n) = &new_unsaved {
                 let _ = ui.selectable_label(true, RichText::new(format!("● {n}")).italics());
             }
             let mut group: Option<&str> = None;
+            let mut toggle: Option<String> = None;
             for e in &self.entries {
                 let c = &e.conn;
                 if !q.is_empty() && ![&c.name, &c.group, &c.url].iter().any(|s| s.to_lowercase().contains(&q)) {
                     continue;
                 }
+                let folded = q.is_empty() && !c.group.is_empty() && self.folded_groups.contains(&c.group);
                 if group != Some(c.group.as_str()) {
                     group = Some(c.group.as_str());
                     if !c.group.is_empty() {
                         ui.add_space(4.0);
-                        ui.label(RichText::new(&c.group).strong().small());
+                        // Clic en el grupo: plegar/desplegar sus conexiones.
+                        let arrow = if folded { "⏵" } else { "⏷" };
+                        let n = self.entries.iter().filter(|x| x.conn.group == c.group).count();
+                        let text = if folded { format!("{arrow} 🗀 {}  ({n})", c.group) } else { format!("{arrow} 🗀 {}", c.group) };
+                        if ui.add(Label::new(RichText::new(text).strong()).sense(Sense::click())).clicked() {
+                            toggle = Some(c.group.clone());
+                        }
                     }
+                }
+                if folded {
+                    continue;
                 }
                 let sel = self.selected.as_deref() == Some(c.id.as_str()) && new_unsaved.is_none();
                 let dirty = sel && self.form.as_ref().is_some_and(|f| f.dirty());
                 let lock = if c.secret.is_empty() { "" } else { " 🔑" };
-                let label = if dirty { format!("● {}{lock}", c.name) } else { format!("{}{lock}", c.name) };
+                let indent = if c.group.is_empty() { "" } else { "    " };
+                let label = if dirty { format!("{indent}● {}{lock}", c.name) } else { format!("{indent}🗄 {}{lock}", c.name) };
                 let r = ui.selectable_label(sel, label).on_hover_text(&c.url);
                 if r.clicked() {
                     if !sel {
@@ -1874,6 +1946,11 @@ impl App {
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
                 ui.weak(t!("Sin conexiones. Pulsa «＋ Nueva»."));
+            }
+            if let Some(g) = toggle {
+                if !self.folded_groups.remove(&g) {
+                    self.folded_groups.insert(g);
+                }
             }
         });
         if let Some(id) = clicked {
@@ -1911,6 +1988,7 @@ impl App {
         let ctx = ui.ctx().clone();
         self.lock_banner(ui);
         let mut pick_jar = false;
+        let mut pick_db = false;
         let mut open_drivers = false;
         let mut want_driver = None;
         let catalog = self.catalog.dir.clone();
@@ -1945,6 +2023,65 @@ impl App {
                 ui.weak(t!("rellena URL y clase"));
             });
             ui.end_row();
+            // Campos de la URL: editar uno rehace la URL; editar la URL los rellena.
+            if let Some(mut p) = crate::urlparts::parse(&f.conn.url) {
+                use crate::urlparts::Kind;
+                let mut changed = false;
+                if p.kind != Kind::File {
+                    ui.label(t!("Servidor"));
+                    ui.horizontal(|ui| {
+                        changed |= ui.add(TextEdit::singleline(&mut p.host).hint_text("localhost").desired_width((w - 150.0).max(120.0))).changed();
+                        ui.label(t!("Puerto"));
+                        let def = crate::urlparts::default_port(&p);
+                        let r = ui.add(TextEdit::singleline(&mut p.port).hint_text(def).desired_width(70.0));
+                        if r.changed() {
+                            changed = true;
+                        }
+                        r.on_hover_text(tf!("Vacío = {puerto} (el de siempre)", puerto = def));
+                    });
+                    ui.end_row();
+                }
+                let label = match p.kind {
+                    Kind::OracleService => t!("Servicio"),
+                    Kind::OracleSid => "SID",
+                    Kind::File if p.prefix == "jdbc:sqlite:" => t!("Archivo"),
+                    Kind::File => t!("Base (ruta o mem:nombre)"),
+                    _ if p.prefix == "jdbc:firebirdsql:" => t!("Ruta de la base"),
+                    _ => t!("Base de datos"),
+                };
+                ui.label(label);
+                ui.horizontal(|ui| {
+                    let extra = if p.kind == Kind::File || matches!(p.kind, Kind::OracleService | Kind::OracleSid) { 110.0 } else { 0.0 };
+                    changed |= ui.add(TextEdit::singleline(&mut p.db).desired_width((w - extra).max(120.0))).changed();
+                    match p.kind {
+                        Kind::File => {
+                            if ui.button(t!("Elegir…")).clicked() {
+                                pick_db = true;
+                            }
+                        }
+                        Kind::OracleService | Kind::OracleSid => {
+                            let mut k = p.kind;
+                            ComboBox::from_id_salt("oracle_forma").selected_text(if k == Kind::OracleSid { "SID" } else { t!("Servicio") }).width(90.0).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut k, Kind::OracleService, t!("Servicio"));
+                                ui.selectable_value(&mut k, Kind::OracleSid, "SID");
+                            });
+                            if k != p.kind {
+                                p.kind = k;
+                                changed = true;
+                            }
+                        }
+                        _ => {}
+                    }
+                });
+                ui.end_row();
+                if changed {
+                    f.conn.url = crate::urlparts::build(&p);
+                }
+            } else if template_for(&f.conn.url).is_some() {
+                ui.label("");
+                ui.weak(t!("URL con formato especial: edítala directamente."));
+                ui.end_row();
+            }
             ui.label(t!("URL JDBC"));
             ui.add(TextEdit::singleline(&mut f.conn.url).font(TextStyle::Monospace).hint_text("jdbc:…").desired_width(w));
             ui.end_row();
@@ -2053,6 +2190,9 @@ impl App {
         if pick_jar {
             self.pick(&ctx, false);
         }
+        if pick_db {
+            self.pick_db_file(&ctx);
+        }
         if open_drivers {
             self.open_drivers_dir();
         }
@@ -2145,10 +2285,16 @@ impl App {
             ui.colored_label(RED, e);
         }
         let q = self.explorer.filter.to_lowercase();
-        ScrollArea::vertical().id_salt("explorador").auto_shrink(false).show(ui, |ui| {
+        let conn_name = self.console.session.as_ref().filter(|_| self.session_id().is_some()).map(|(_, n)| n.clone());
+        // Nombres en una línea (sin ajustar); si no caben, se desplaza en horizontal.
+        ScrollArea::both().id_salt("explorador").auto_shrink(false).show(ui, |ui| {
+            ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
+            let Some(conn_name) = conn_name else { return };
+            let root = CollapsingHeader::new(RichText::new(format!("🗄 {conn_name}")).strong()).id_salt(("explorador_conexion", &conn_name)).default_open(true);
+            root.show(ui, |ui| {
             for x in &mut self.explorer.schemas {
                 let id = ui.make_persistent_id(("esquema", &x.cat, &x.sch));
-                let header = CollapsingHeader::new(x.label().to_owned()).id_salt(id).open(Some(x.open || (!q.is_empty() && x.tables.is_some())));
+                let header = CollapsingHeader::new(format!("🗀 {}", x.label())).id_salt(id).open(Some(x.open || (!q.is_empty() && x.tables.is_some())));
                 let r = header.show(ui, |ui| {
                     if x.loading {
                         ui.spinner();
@@ -2207,6 +2353,7 @@ impl App {
                     }
                 }
             }
+            });
         });
         if let Some(sql) = insert {
             self.console.sql = sql;
@@ -2886,7 +3033,8 @@ impl App {
         let Ok(path) = std::env::var("CONECTOR_CAPTURA") else { return };
         self.debug_frames += 1;
         if self.debug_frames == 2 && self.form.is_none() && std::env::var_os("CONECTOR_SIN_ELEGIR").is_none() {
-            if let Some(id) = self.entries.first().map(|e| e.conn.id.clone()) {
+            let want = std::env::var("CONECTOR_ELEGIR").unwrap_or_default();
+            if let Some(id) = self.entries.iter().find(|e| e.conn.name.contains(&want)).map(|e| e.conn.id.clone()) {
                 self.select(id);
             }
         }

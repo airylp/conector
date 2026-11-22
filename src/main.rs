@@ -16,6 +16,7 @@ mod store;
 mod tls;
 mod tunnel;
 mod update;
+mod urlparts;
 
 use std::process::ExitCode;
 

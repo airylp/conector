@@ -262,3 +262,11 @@ DDL de {tabla}	DDL of {tabla}	DDL de {tabla}
 Al editor	To editor	Vers l’éditeur
 Copia la DDL al editor SQL	Copies the DDL into the SQL editor	Copie le DDL dans l’éditeur SQL
 DDL copiada.	DDL copied.	DDL copié.
+(tablas)	(tables)	(tables)
+Servidor	Server	Serveur
+Puerto	Port	Port
+Vacío = {puerto} (el de siempre)	Empty = {puerto} (the default)	Vide = {puerto} (celui par défaut)
+Servicio	Service	Service
+Base (ruta o mem:nombre)	Database (path or mem:name)	Base (chemin ou mem:nom)
+Ruta de la base	Database path	Chemin de la base
+URL con formato especial: edítala directamente.	URL in a special format: edit it directly.	URL au format spécial : modifiez-la directement.
