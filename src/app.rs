@@ -185,6 +185,89 @@ struct ResultTab {
     info: String,
     /// Pestaña de texto (DDL) en vez de tabla.
     text: Option<String>,
+    /// Filas/columnas seleccionadas para copiar.
+    sel: TableSel,
+}
+
+/// Selección en la tabla de resultados: todo (esquina «#»), filas (números) o columnas (cabeceras).
+#[derive(Default)]
+struct TableSel {
+    all: bool,
+    rows: std::collections::BTreeSet<usize>,
+    cols: std::collections::BTreeSet<usize>,
+    /// Última fila/columna pulsada (para Mayús+clic).
+    anchor: Option<usize>,
+}
+
+impl TableSel {
+    fn is_empty(&self) -> bool {
+        !self.all && self.rows.is_empty() && self.cols.is_empty()
+    }
+
+    /// Clic en una fila (`row`) o columna: solo esa; Ctrl/⌘ añade o quita; Mayús, rango desde la anterior.
+    fn click(&mut self, row: bool, i: usize, m: Modifiers) {
+        let same_kind = if row { self.cols.is_empty() } else { self.rows.is_empty() } && !self.all;
+        let anchor = self.anchor.filter(|_| same_kind);
+        self.all = false;
+        if row { self.cols.clear() } else { self.rows.clear() }
+        let set = if row { &mut self.rows } else { &mut self.cols };
+        match anchor {
+            Some(a) if m.shift => {
+                if !m.command {
+                    set.clear();
+                }
+                set.extend(a.min(i)..=a.max(i));
+                return; // el ancla se queda para ampliar o reducir el rango
+            }
+            _ if m.command => {
+                if !set.remove(&i) {
+                    set.insert(i);
+                }
+            }
+            _ => {
+                let only = set.len() == 1 && set.contains(&i);
+                set.clear();
+                if !only {
+                    set.insert(i);
+                }
+            }
+        }
+        self.anchor = Some(i);
+    }
+
+    fn row(&self, i: usize) -> bool {
+        self.all || self.rows.contains(&i)
+    }
+
+    fn col(&self, j: usize) -> bool {
+        self.all || self.cols.contains(&j)
+    }
+}
+
+/// Valor para pegar en una hoja de cálculo (TSV): entre comillas si lleva tabulador, salto o comillas.
+fn tsv_field(v: &str) -> std::borrow::Cow<'_, str> {
+    if v.contains(['\t', '\n', '\r', '"']) { format!("\"{}\"", v.replace('"', "\"\"")).into() } else { v.into() }
+}
+
+/// Lo seleccionado como TSV (NULL = vacío) y un mensaje para la barra de estado.
+fn selection_tsv(c: &ResultTab, headers: bool) -> Option<(String, String)> {
+    let sel = &c.sel;
+    if sel.is_empty() {
+        return None;
+    }
+    let rows: Vec<usize> = if sel.rows.is_empty() { (0..c.rows.len()).collect() } else { sel.rows.iter().copied().filter(|&i| i < c.rows.len()).collect() };
+    let cols: Vec<usize> = if sel.cols.is_empty() { (0..c.cols.len()).collect() } else { sel.cols.iter().copied().filter(|&j| j < c.cols.len()).collect() };
+    let mut out = String::new();
+    if headers {
+        out.push_str(&cols.iter().map(|&j| tsv_field(&c.cols[j].0)).collect::<Vec<_>>().join("\t"));
+        out.push('\n');
+    }
+    for &i in &rows {
+        let r = &c.rows[i];
+        out.push_str(&cols.iter().map(|&j| r.get(j).and_then(|v| v.as_deref()).map_or("".into(), tsv_field)).collect::<Vec<_>>().join("\t"));
+        out.push('\n');
+    }
+    Some((out, tf!("Copiadas {filas} filas × {columnas} columnas", filas = rows.len(), columnas = cols.len())))
 }
 
 /// Máximo de pestañas de resultados (las más viejas se cierran).
@@ -1710,7 +1793,7 @@ impl App {
                 let rows: Vec<_> = rows.iter().map(|r| found.iter().map(|(i, _)| r.get(*i).cloned().flatten()).collect::<Vec<_>>().into_boxed_slice()).collect();
                 let info = tf!("Columnas de {tabla}: {n}", tabla = label, n = rows.len());
                 let cols = found.iter().map(|(_, l)| ((*l).to_owned(), String::new())).collect();
-                self.console.push_tab(ResultTab { title: format!("▦ {label}"), sql: String::new(), cols, rows, widths: Vec::new(), info, text: None });
+                self.console.push_tab(ResultTab { title: format!("▦ {label}"), sql: String::new(), cols, rows, widths: Vec::new(), info, ..Default::default() });
             }
             Meta::Ddl(label, _) => {
                 let ddl = rows.first().and_then(|r| r.first().cloned().flatten()).map(String::from).unwrap_or_default();
@@ -2628,6 +2711,7 @@ impl App {
             Some(_) => {
                 let running = self.console.running.is_some() && self.console.current_tab && self.console.active == Some(self.console.tabs.len() - 1);
                 let mut copy = false;
+                let mut copy_msg: Option<String> = None;
                 let mut want_export = false;
                 let mut to_editor = None;
                 if let Some(text) = self.console.tab().and_then(|t| t.text.clone()) {
@@ -2661,20 +2745,27 @@ impl App {
                             if ui.small_button(t!("⬇ Exportar…")).clicked() {
                                 want_export = true;
                             }
-                            if !t.rows.is_empty() && ui.small_button(t!("Copiar como TSV")).clicked() {
+                            let label = if t.sel.is_empty() { t!("Copiar como TSV") } else { t!("Copiar selección") };
+                            if !t.rows.is_empty() && ui.small_button(label).clicked() {
                                 copy = true;
                             }
                         });
                     });
                     if copy {
-                        ui.ctx().copy_text(tsv(&t.cols, &t.rows));
+                        match selection_tsv(t, true) {
+                            Some((text, msg)) => {
+                                ui.ctx().copy_text(text);
+                                copy_msg = Some(msg);
+                            }
+                            None => ui.ctx().copy_text(tsv(&t.cols, &t.rows)),
+                        }
                     }
                     if let Some(msg) = results_table(ui, t, running) {
                         self.status = msg;
                     }
                 }
                 if copy {
-                    self.status = t!("Resultado copiado.").into();
+                    self.status = copy_msg.unwrap_or_else(|| t!("Resultado copiado.").into());
                 }
                 if want_export {
                     self.open_export();
@@ -3681,15 +3772,43 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
     ScrollArea::horizontal().id_salt("res_h").auto_shrink(false).show(ui, |ui| {
         ui.set_min_width(total_w);
         // Cabecera.
+        let mods = ui.input(|i| i.modifiers);
+        let sel_bg = ui.visuals().selection.bg_fill.gamma_multiply(0.45);
+        let mut copy_menu: Option<bool> = None;
+        let menu = |r: &Response, copy_menu: &mut Option<bool>| {
+            r.context_menu(|ui| {
+                if ui.button(t!("Copiar (con encabezados)")).clicked() {
+                    *copy_menu = Some(true);
+                    ui.close();
+                }
+                if ui.button(t!("Copiar sin encabezados")).clicked() {
+                    *copy_menu = Some(false);
+                    ui.close();
+                }
+            });
+        };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
-            ui.add_sized([48.0, row_h], Label::new(RichText::new("#").weak()));
-            for ((n, t), w) in c.cols.iter().zip(&c.widths) {
-                let r = boxed(ui, *w, row_h, Label::new(RichText::new(n).strong().monospace()).truncate());
-                if !t.is_empty() {
-                    r.on_hover_text(t);
-                }
+            let bg = ui.painter().add(Shape::Noop);
+            let corner = ui.add_sized([48.0, row_h], Button::selectable(c.sel.all, RichText::new("#").weak()).frame_when_inactive(false));
+            if corner.clicked() {
+                let all = !c.sel.all;
+                c.sel = TableSel { all, ..Default::default() };
             }
+            menu(&corner.on_hover_text(t!("Seleccionar todo (Ctrl+C copia la selección)")), &mut copy_menu);
+            let mut shapes = Vec::new();
+            for (j, ((n, t), w)) in c.cols.iter().zip(&c.widths).enumerate() {
+                let r = boxed(ui, *w, row_h, Label::new(RichText::new(n).strong().monospace()).truncate().selectable(false).sense(Sense::click()));
+                if c.sel.col(j) && !c.sel.all {
+                    shapes.push(Shape::rect_filled(r.rect, 0.0, sel_bg));
+                }
+                if r.clicked() {
+                    c.sel.click(false, j, mods);
+                }
+                let r = if t.is_empty() { r } else { r.on_hover_text(t) };
+                menu(&r, &mut copy_menu);
+            }
+            ui.painter().set(bg, Shape::Vec(shapes));
         });
         ui.separator();
         ScrollArea::vertical().id_salt("res_v").auto_shrink(false).show_rows(ui, row_h, c.rows.len(), |ui, range| {
@@ -3698,26 +3817,51 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                 let row = &c.rows[i];
                 // Fondo de filas alternas: se reserva antes para quedar debajo del texto.
                 let bg = ui.painter().add(Shape::Noop);
+                let row_sel = c.sel.row(i);
+                let mut cells = Vec::new();
                 let r = ui.horizontal(|ui| {
-                    ui.add_sized([48.0, row_h], Label::new(RichText::new((i + 1).to_string()).color(weak).small()));
+                    let n = ui.add_sized([48.0, row_h], Label::new(RichText::new((i + 1).to_string()).color(weak).small()).selectable(false).sense(Sense::click()));
+                    if n.clicked() {
+                        c.sel.click(true, i, mods);
+                    }
+                    menu(&n, &mut copy_menu);
                     for (j, w) in c.widths.iter().enumerate() {
                         let cell = row.get(j).and_then(|v| v.as_deref());
                         let text = match cell {
                             Some(v) => RichText::new(v.replace(['\n', '\r', '\t'], " ")).monospace(),
                             None => RichText::new("NULL").italics().color(weak),
                         };
-                        let r = boxed(ui, *w, row_h, Label::new(text).truncate().sense(Sense::click()));
+                        let r = boxed(ui, *w, row_h, Label::new(text).truncate().selectable(false).sense(Sense::click()));
+                        if !row_sel && c.sel.col(j) {
+                            cells.push(Shape::rect_filled(r.rect, 0.0, sel_bg));
+                        }
                         if r.clicked() {
                             ui.ctx().copy_text(cell.unwrap_or("").to_owned());
                             copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
                         }
+                        if !c.sel.is_empty() {
+                            menu(&r, &mut copy_menu);
+                        }
                     }
                 });
+                let mut shapes = Vec::new();
                 if i % 2 == 1 {
-                    ui.painter().set(bg, Shape::rect_filled(r.response.rect, 0.0, stripe));
+                    shapes.push(Shape::rect_filled(r.response.rect, 0.0, stripe));
                 }
+                if row_sel {
+                    shapes.push(Shape::rect_filled(r.response.rect, 0.0, sel_bg));
+                }
+                shapes.extend(cells);
+                ui.painter().set(bg, Shape::Vec(shapes));
             }
         });
+        // Ctrl+C (egui lo convierte en «Copy») copia la selección si no se está editando texto.
+        let ctrl_c = ui.input(|i| i.events.iter().any(|e| matches!(e, eframe::egui::Event::Copy))) && ui.memory(|m| m.focused().is_none());
+        let headers = copy_menu.or(if ctrl_c { Some(true) } else { None });
+        if let Some((text, msg)) = headers.and_then(|h| selection_tsv(c, h)) {
+            ui.ctx().copy_text(text);
+            copied = Some(msg);
+        }
     });
     copied
 }

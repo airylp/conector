@@ -317,3 +317,8 @@ Traer todo al frente	Bring all to front	Tout ramener au premier plan
 Ayuda	Help	Aide
 ⬇ Volver a descargar Java portátil	⬇ Download portable Java again	⬇ Retélécharger Java portable
 portátil: {ruta}	portable: {ruta}	portable : {ruta}
+Copiar (con encabezados)	Copy (with headers)	Copier (avec en-têtes)
+Copiar sin encabezados	Copy without headers	Copier sans en-têtes
+Seleccionar todo (Ctrl+C copia la selección)	Select all (Ctrl+C copies the selection)	Tout sélectionner (Ctrl+C copie la sélection)
+Copiadas {filas} filas × {columnas} columnas	Copied {filas} rows × {columnas} columns	Copié {filas} lignes × {columnas} colonnes
+Copiar selección	Copy selection	Copier la sélection
