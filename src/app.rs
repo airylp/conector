@@ -191,6 +191,8 @@ struct ResultTab {
     edit: Option<EditState>,
     /// Petición «editable» en curso para esta pestaña.
     edit_req: Option<u64>,
+    /// Por qué no se puede editar (si se preguntó y no).
+    read_only: Option<String>,
 }
 
 /// Edición de los valores de una pestaña de resultados.
@@ -221,6 +223,16 @@ impl EditState {
     fn can_edit(&self, row: &[Option<Box<str>>], j: usize) -> bool {
         let cut = row.get(j).and_then(|v| v.as_deref()).is_some_and(|v| v.ends_with('…') && v.chars().count() > 4096);
         self.base.get(j).is_some_and(|b| b.is_some()) && !self.key.contains(&j) && !cut
+    }
+
+    /// Guarda en `changes` lo que se escribía en la celda en edición (si cambió).
+    fn commit_editing(&mut self, rows: &[Box<[Option<Box<str>>]>]) {
+        let Some((r, c, text, _)) = self.editing.take() else { return };
+        if rows.get(r).and_then(|row| row.get(c)).and_then(|v| v.as_deref()) == Some(text.as_str()) {
+            self.changes.remove(&(r, c));
+        } else {
+            self.changes.insert((r, c), Some(text));
+        }
     }
 
     fn rows_changed(&self) -> usize {
@@ -448,8 +460,8 @@ enum Pending {
     Open,
     Query,
     Meta(Meta),
-    /// ¿Se puede editar el resultado? (`editable`)
-    Editable,
+    /// ¿Se puede editar el resultado? (`editable`; true = automática al terminar la consulta)
+    Editable(bool),
     /// Guardar los cambios de una pestaña (`editar`).
     Edit,
     Other,
@@ -1028,8 +1040,23 @@ impl App {
             return;
         };
         let Some(sql) = self.console.tab().map(|t| t.sql.clone()) else { return };
-        let id = self.send("editable", &[("sesion".into(), s), ("sql".into(), sql)], Pending::Editable);
+        let id = self.send("editable", &[("sesion".into(), s), ("sql".into(), sql)], Pending::Editable(false));
         if let Some(t) = self.console.tab() {
+            t.edit_req = Some(id);
+        }
+    }
+
+    /// Al terminar un SELECT, pregunta en segundo plano si se puede editar (como DBeaver: sin modo aparte).
+    fn probe_editable(&mut self) {
+        let Some(s) = self.session_id() else { return };
+        let Some(t) = self.console.tabs.last() else { return };
+        let first = t.sql.trim_start().split(|c: char| !c.is_ascii_alphabetic()).next().unwrap_or("");
+        if !first.eq_ignore_ascii_case("select") || t.cols.is_empty() || t.edit.is_some() {
+            return;
+        }
+        let sql = t.sql.clone();
+        let id = self.send("editable", &[("sesion".into(), s), ("sql".into(), sql)], Pending::Editable(true));
+        if let Some(t) = self.console.tabs.last_mut() {
             t.edit_req = Some(id);
         }
     }
@@ -1393,11 +1420,14 @@ impl App {
                     }
                 }
             }
-            Some(Pending::Editable) => {
+            Some(Pending::Editable(auto)) => {
                 if let Some(t) = self.console.tabs.iter_mut().find(|t| t.edit_req == Some(id)) {
                     t.edit_req = None;
+                    t.read_only = Some(e.msg.clone());
                 }
-                self.status = e.msg;
+                if !auto {
+                    self.status = e.msg;
+                }
             }
             Some(Pending::Edit) => {
                 if let Some(ed) = self.console.tabs.iter_mut().filter_map(|t| t.edit.as_mut()).find(|ed| ed.applying == Some(id)) {
@@ -1416,7 +1446,7 @@ impl App {
             return self.fail(m.id, ErrInfo::from_msg(&m));
         }
         match self.pending.get(&m.id) {
-            Some(Pending::Editable) => {
+            Some(&Pending::Editable(auto)) => {
                 self.pending.remove(&m.id);
                 let conn = self.console.session_conn.clone();
                 if let Some(t) = self.console.tabs.iter_mut().find(|t| t.edit_req == Some(m.id)) {
@@ -1425,11 +1455,16 @@ impl App {
                     let base: Vec<Option<String>> = list("columnas").into_iter().map(|c| Some(c).filter(|c| !c.is_empty())).collect();
                     let key: Vec<usize> = m.get("clave").unwrap_or("").split(',').filter_map(|k| k.parse().ok()).collect();
                     if base.len() != t.cols.len() || key.is_empty() {
-                        self.status = t!("No se puede editar este resultado.").into();
+                        t.read_only = Some(t!("No se puede editar este resultado.").into());
+                        if !auto {
+                            self.status = t!("No se puede editar este resultado.").into();
+                        }
                         return;
                     }
                     let table = m.get("sql_tabla").unwrap_or("").to_owned();
-                    self.status = tf!("Editando {tabla}: doble clic en una celda para cambiarla.", tabla = table);
+                    if !auto {
+                        self.status = tf!("Editando {tabla}: clic en una celda para cambiarla.", tabla = table);
+                    }
                     t.edit = Some(EditState {
                         conn,
                         cat: m.get("catalogo").unwrap_or("").to_owned(),
@@ -1524,6 +1559,7 @@ impl App {
                     }
                     "fin" => {
                         self.pending.remove(&m.id);
+                        let mut probe = false;
                         let ms = m.get("ms").unwrap_or("?");
                         let upd = m.get("actualizadas").unwrap_or("");
                         let title = short_title(&c.current);
@@ -1537,6 +1573,7 @@ impl App {
                             t.rows.shrink_to_fit();
                             let line = format!("✔ {title} — {}", t.info);
                             c.log.push((true, line));
+                            probe = true;
                         } else {
                             let info = if upd.is_empty() { tf!("Hecho en {ms} ms", ms = ms) } else { tf!("Filas afectadas: {n} · {ms} ms", n = upd, ms = ms) };
                             c.log.push((true, format!("✔ {title} — {info}")));
@@ -1545,7 +1582,11 @@ impl App {
                             }
                         }
                         c.running = None;
-                        if !c.queue.is_empty() {
+                        let more = !c.queue.is_empty();
+                        if probe {
+                            self.probe_editable();
+                        }
+                        if more {
                             self.next_statement();
                         }
                     }
@@ -2305,8 +2346,7 @@ impl App {
         ui.add_space(4.0);
         let q = self.filter.to_lowercase();
         let mut clicked = None;
-        let mut deselect = false;
-        let mut reopen = false;
+        let mut details = false;
         let new_unsaved = self.form.as_ref().filter(|f| f.mtime.is_none()).map(|f| f.conn.name.clone());
         ScrollArea::both().id_salt("lista_conexiones").auto_shrink(false).show(ui, |ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
@@ -2343,15 +2383,12 @@ impl App {
                 let indent = if c.group.is_empty() { "" } else { "    " };
                 let label = if dirty { format!("{indent}● {}{lock}", c.name) } else { format!("{indent}🗄 {}{lock}", c.name) };
                 let r = ui.selectable_label(sel, label).on_hover_text(&c.url);
+                // Clic: elegir y conectar (el explorador muestra sus tablas). Doble clic: ver sus datos.
                 if r.clicked() {
-                    if !sel {
-                        clicked = Some(c.id.clone());
-                    } else if !self.show_form {
-                        // Elegida pero con la ventana cerrada: se vuelve a abrir.
-                        reopen = true;
-                    } else {
-                        deselect = true;
-                    }
+                    clicked = Some(c.id.clone());
+                }
+                if r.double_clicked() {
+                    details = true;
                 }
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
@@ -2364,13 +2401,17 @@ impl App {
             }
         });
         if let Some(id) = clicked {
-            self.select(id);
+            if self.selected.as_deref() != Some(id.as_str()) || new_unsaved.is_some() {
+                self.select(id.clone());
+                self.show_form = false;
+            }
+            let connected = self.console.session_conn == id && (self.console.session.is_some() || self.console.opening.is_some());
+            if !connected && self.console.running.is_none() && self.form.as_ref().is_some_and(|f| f.conn.id == id) {
+                self.connect();
+            }
+        }
+        if details {
             self.show_form = true;
-        } else if reopen {
-            self.show_form = true;
-        } else if deselect {
-            // Clic en la elegida con su ventana abierta: se cierra la ventana.
-            self.show_form = false;
         }
     }
 
@@ -2984,6 +3025,8 @@ impl App {
                             if t.edit.is_none() && !t.sql.is_empty() && !running {
                                 if t.edit_req.is_some() {
                                     ui.spinner();
+                                } else if let Some(why) = &t.read_only {
+                                    ui.weak(t!("🔒 solo lectura")).on_hover_text(why);
                                 } else if ui
                                     .add_enabled(session_ok, Button::new(t!("✎ Editar")).small())
                                     .on_hover_text(t!("Cambiar valores de una o varias filas (si el resultado es de una sola tabla con clave primaria)"))
@@ -2994,13 +3037,12 @@ impl App {
                             }
                         });
                     });
-                    let mut leave = false;
                     if let Some(e) = &mut t.edit {
                         ui.horizontal_wrapped(|ui| {
                             let n = e.changes.len();
                             ui.label(RichText::new(tf!("✎ {tabla}", tabla = e.sql_table)).strong());
                             if n == 0 {
-                                ui.weak(t!("doble clic en una celda para cambiarla"));
+                                ui.weak(t!("clic en una celda para editarla")).on_hover_text(t!("Clic en una celda para cambiarla; clic derecho: NULL, deshacer, copiar"));
                             } else {
                                 ui.colored_label(ORANGE, tf!("{n} cambios en {filas} filas", n = n, filas = e.rows_changed()));
                             }
@@ -3008,27 +3050,21 @@ impl App {
                                 ui.spinner();
                             }
                             let can = n > 0 && e.applying.is_none();
-                            if ui.add_enabled(can, Button::new(t!("👁 Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
+                            if n > 0 && ui.add_enabled(can, Button::new(t!("👁 Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
                                 want_preview = true;
                             }
-                            if ui.add_enabled(can && !busy && session_ok, Button::new(t!("✔ Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
+                            if n > 0 && ui.add_enabled(can && !busy && session_ok, Button::new(t!("✔ Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
                                 want_apply = true;
                             }
-                            if ui.add_enabled(can, Button::new(t!("Descartar")).small()).clicked() {
+                            if n > 0 && ui.add_enabled(can, Button::new(t!("Descartar")).small()).clicked() {
                                 e.changes.clear();
                                 e.editing = None;
                                 e.error = None;
-                            }
-                            if ui.add_enabled(n == 0 && e.applying.is_none(), Button::new(t!("Salir de edición")).small()).clicked() {
-                                leave = true;
                             }
                         });
                         if let Some(err) = &e.error {
                             error_box(ui, err, 160.0);
                         }
-                    }
-                    if leave {
-                        t.edit = None;
                     }
                     if copy {
                         match selection_tsv(t, true) {
@@ -4171,14 +4207,10 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                                 resp.request_focus();
                                 *focused = true;
                             } else if resp.lost_focus() || !resp.has_focus() {
-                                let cancel = ui.input(|i| i.key_pressed(Key::Escape));
-                                let (r, cc, text, _) = e.editing.take().unwrap();
-                                if !cancel {
-                                    if row.get(cc).and_then(|v| v.as_deref()) == Some(text.as_str()) {
-                                        e.changes.remove(&(r, cc));
-                                    } else {
-                                        e.changes.insert((r, cc), Some(text));
-                                    }
+                                if ui.input(|i| i.key_pressed(Key::Escape)) {
+                                    e.editing = None;
+                                } else {
+                                    e.commit_editing(&c.rows);
                                 }
                             }
                             continue;
@@ -4201,9 +4233,11 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                         } else if !row_sel && c.sel.col(j) {
                             cells.push(Shape::rect_filled(r.rect, 0.0, sel_bg));
                         }
-                        if editable && r.double_clicked() {
+                        // Clic en una celda editable: se edita ahí mismo (como DBeaver); si no, se copia.
+                        if editable && r.clicked() && mods.is_none() {
                             let current = cell.unwrap_or("").to_owned();
                             if let Some(e) = &mut c.edit {
+                                e.commit_editing(&c.rows);
                                 e.editing = Some((i, j, current, false));
                             }
                         } else if r.clicked() {
@@ -4211,11 +4245,15 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                             copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
                         }
                         if editable {
-                            // 0 = editar, 1 = NULL, 2 = deshacer
+                            // 0 = editar, 1 = NULL, 2 = deshacer, 3 = copiar
                             let mut act: Option<u8> = None;
                             r.context_menu(|ui| {
                                 if ui.button(t!("✎ Editar")).clicked() {
                                     act = Some(0);
+                                    ui.close();
+                                }
+                                if ui.button(t!("Copiar valor")).clicked() {
+                                    act = Some(3);
                                     ui.close();
                                 }
                                 if ui.button(t!("Poner NULL")).clicked() {
@@ -4238,7 +4276,10 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                                     }
                                 }
                             });
-                            if let (Some(a), Some(e)) = (act, &mut c.edit) {
+                            if act == Some(3) {
+                                ui.ctx().copy_text(cell.unwrap_or("").to_owned());
+                                copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
+                            } else if let (Some(a), Some(e)) = (act, &mut c.edit) {
                                 match a {
                                     0 => e.editing = Some((i, j, cell.unwrap_or("").to_owned(), false)),
                                     1 if row.get(j).is_some_and(|v| v.is_none()) => {
