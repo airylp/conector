@@ -107,6 +107,8 @@ public final class ConectorHelper {
             else if (cmd.equals("consulta")) query(id, a);
             else if (cmd.equals("meta")) meta(id, a);
             else if (cmd.equals("lote")) batch(id, a, f);
+            else if (cmd.equals("editable")) editable(id, a);
+            else if (cmd.equals("editar")) edit(id, a, f);
             else if (cmd.equals("cancelar")) cancel(id, a);
             else if (cmd.equals("cerrar")) close(id, a);
             else send("error", id, "mensaje=orden desconocida: " + cmd);
@@ -624,6 +626,286 @@ public final class ConectorHelper {
             try { c.setAutoCommit(auto); } catch (Throwable ignored) { }
         }
         send("ok", id, "filas=" + rows, "ms=" + (System.nanoTime() - t0) / 1000000);
+    }
+
+    // ---------- editar resultados ----------
+
+    /**
+     * ¿Se pueden editar las filas de `sql`? Solo si todas sus columnas vienen de una
+     * tabla y entre ellas está su clave primaria (o un índice único). Describe la
+     * consulta sin ejecutarla (si el driver no sabe, la ejecuta con 1 fila como máximo).
+     * Responde ok con catalogo, esquema, tabla (tal cual), sql_tabla (con comillas),
+     * columnas / sql_columnas (columna base de cada columna del resultado, vacía si no
+     * se puede editar) y clave (posiciones en el resultado, separadas por comas).
+     */
+    static void editable(String id, Map<String, String> a) throws Exception {
+        Connection c = session(a);
+        DatabaseMetaData m = c.getMetaData();
+        String sql = a.get("sql");
+        int n;
+        String[] cat, sch, tab, col;
+        int[] type;
+        PreparedStatement ps = c.prepareStatement(sql);
+        ResultSet rs = null;
+        try {
+            ResultSetMetaData md = ps.getMetaData();
+            if (md == null) {
+                ps.setMaxRows(1);
+                rs = ps.executeQuery();
+                md = rs.getMetaData();
+            }
+            n = md.getColumnCount();
+            cat = new String[n]; sch = new String[n]; tab = new String[n]; col = new String[n];
+            type = new int[n];
+            for (int i = 0; i < n; i++) {
+                cat[i] = emptyToNull(safe(md, "getCatalogName", i + 1));
+                sch[i] = emptyToNull(baseOr(md, "getBaseSchemaName", "getSchemaName", i + 1));
+                tab[i] = emptyToNull(baseOr(md, "getBaseTableName", "getTableName", i + 1));
+                col[i] = emptyToNull(baseOr(md, "getBaseColumnName", "getColumnName", i + 1));
+                type[i] = md.getColumnType(i + 1);
+            }
+        } finally {
+            if (rs != null) try { rs.close(); } catch (Throwable ignored) { }
+            try { ps.close(); } catch (Throwable ignored) { }
+        }
+        // Drivers que no dicen la tabla: «select … from X» simple, columnas por su etiqueta.
+        boolean any = false;
+        for (String t : tab) any |= t != null;
+        if (!any) {
+            String t = simpleFrom(sql);
+            if (t == null) throw new SQLException("no se puede editar: el driver no dice de qué tabla vienen las columnas y la consulta no es un «select … from tabla» simple");
+            String s = null;
+            int dot = t.lastIndexOf('.');
+            if (dot >= 0) { s = unquote(t.substring(0, dot)); t = t.substring(dot + 1); }
+            t = unquote(t);
+            Map<String, Integer> known = typesOf(m, null, s, t);
+            if (known.isEmpty()) throw new SQLException("no se puede editar: no se encuentra la tabla " + t);
+            String[] found = foundName(m, s, t);
+            PreparedStatement p2 = c.prepareStatement(sql);
+            try {
+                ResultSetMetaData md = p2.getMetaData();
+                for (int i = 0; i < n; i++) {
+                    String label = md == null ? col[i] : md.getColumnLabel(i + 1);
+                    if (label != null && known.containsKey(label.toLowerCase(Locale.ROOT))) {
+                        cat[i] = found[0]; sch[i] = found[1]; tab[i] = found[2]; col[i] = label;
+                    }
+                }
+            } finally {
+                try { p2.close(); } catch (Throwable ignored) { }
+            }
+        }
+        // Una sola tabla.
+        String tCat = null, tSch = null, tTab = null;
+        for (int i = 0; i < n; i++) {
+            if (tab[i] == null) continue;
+            if (tTab == null) { tCat = cat[i]; tSch = sch[i]; tTab = tab[i]; }
+            else if (!tTab.equalsIgnoreCase(tab[i]) || (tSch != null && sch[i] != null && !tSch.equalsIgnoreCase(sch[i]))) {
+                throw new SQLException("no se puede editar: la consulta une varias tablas (" + tTab + ", " + tab[i] + ")");
+            }
+        }
+        if (tTab == null) throw new SQLException("no se puede editar: ninguna columna viene de una tabla");
+        // Catálogo y esquema según getTables: el de ResultSetMetaData no siempre es fiable
+        // (SQLite da el nombre de la tabla como catálogo).
+        String[] real = foundName(m, tSch, tTab);
+        tCat = real[0]; tSch = real[1]; tTab = real[2];
+        List<String> key = keyColumns(m, tCat, tSch, tTab);
+        if (key.isEmpty()) throw new SQLException("no se puede editar: la tabla " + tTab + " no tiene clave primaria ni índice único");
+        StringBuilder keyIdx = new StringBuilder();
+        for (String k : key) {
+            int at = -1;
+            for (int i = 0; i < n && at < 0; i++) if (tab[i] != null && k.equalsIgnoreCase(col[i])) at = i;
+            if (at < 0) throw new SQLException("no se puede editar: falta la columna clave " + k + " en el resultado");
+            keyIdx.append(keyIdx.length() > 0 ? "," : "").append(at);
+        }
+        StringBuilder cols = new StringBuilder(), sqlCols = new StringBuilder();
+        for (int i = 0; i < n; i++) {
+            boolean ok = tab[i] != null && col[i] != null && !isBinary(type[i]);
+            if (i > 0) { cols.append('\u0001'); sqlCols.append('\u0001'); }
+            if (ok) { cols.append(col[i]); sqlCols.append(quote(m, col[i])); }
+        }
+        send("ok", id, "catalogo=" + (tCat == null ? "" : tCat), "esquema=" + (tSch == null ? "" : tSch), "tabla=" + tTab,
+            "sql_tabla=" + qualified(m, tCat, tSch, tTab), "columnas=" + cols, "sql_columnas=" + sqlCols, "clave=" + keyIdx);
+    }
+
+    /**
+     * Guarda cambios en filas de una tabla: `catalogo`, `esquema`, `tabla`, `clave`
+     * (columnas clave, \u0001) y por cada fila `set=colA\u0001colB` seguido de los
+     * valores nuevos y de los de la clave (`v=texto` / `z=` NULL). Un UPDATE por fila,
+     * con parámetros y todo en una transacción: si alguno no cambia exactamente una
+     * fila, no se guarda nada.
+     */
+    static void edit(String id, Map<String, String> a, List<String> f) throws Exception {
+        Connection c = session(a);
+        DatabaseMetaData m = c.getMetaData();
+        String cat = emptyToNull(a.get("catalogo")), sch = emptyToNull(a.get("esquema")), tab = a.get("tabla");
+        String[] key = a.get("clave").split("\u0001", -1);
+        List<String[]> sets = new ArrayList<String[]>();
+        List<List<String>> vals = new ArrayList<List<String>>();
+        for (int i = 2; i < f.size(); i++) {
+            String kv = f.get(i);
+            if (kv == null) continue;
+            if (kv.startsWith("set=")) { sets.add(kv.substring(4).split("\u0001", -1)); vals.add(new ArrayList<String>()); }
+            else if (!vals.isEmpty() && kv.startsWith("v=")) vals.get(vals.size() - 1).add(kv.substring(2));
+            else if (!vals.isEmpty() && kv.startsWith("z=")) vals.get(vals.size() - 1).add(null);
+        }
+        Map<String, Integer> types = typesOf(m, cat, sch, tab);
+        String table = qualified(m, cat, sch, tab);
+        long t0 = System.nanoTime();
+        boolean auto = c.getAutoCommit();
+        int row = 0;
+        try {
+            c.setAutoCommit(false);
+            for (row = 0; row < sets.size(); row++) {
+                String[] set = sets.get(row);
+                List<String> v = vals.get(row);
+                if (v.size() != set.length + key.length) throw new IllegalArgumentException("número de valores incorrecto");
+                StringBuilder sql = new StringBuilder("update ").append(table).append(" set ");
+                for (int i = 0; i < set.length; i++) sql.append(i > 0 ? ", " : "").append(quote(m, set[i])).append(" = ?");
+                sql.append(" where ");
+                for (int i = 0; i < key.length; i++) {
+                    sql.append(i > 0 ? " and " : "").append(quote(m, key[i]));
+                    sql.append(v.get(set.length + i) == null ? " is null" : " = ?");
+                }
+                PreparedStatement ps = c.prepareStatement(sql.toString());
+                RUNNING.put(id, ps);
+                try {
+                    int p = 1;
+                    for (int i = 0; i < set.length; i++) bind(ps, p++, typeOf(types, set[i]), v.get(i));
+                    for (int i = 0; i < key.length; i++) {
+                        String kv = v.get(set.length + i);
+                        if (kv != null) bind(ps, p++, typeOf(types, key[i]), kv);
+                    }
+                    int u = ps.executeUpdate();
+                    if (u != 1) throw new SQLException("el cambio " + (row + 1) + " afectó " + u + " filas (se esperaba 1): no se guardó nada");
+                } finally {
+                    RUNNING.remove(id);
+                    try { ps.close(); } catch (Throwable ignored) { }
+                }
+            }
+            c.commit();
+        } catch (Exception e) {
+            try { c.rollback(); } catch (Throwable ignored) { }
+            if (e instanceof SQLException && e.getMessage() != null && e.getMessage().startsWith("el cambio ")) throw e;
+            throw new SQLException("cambio " + (row + 1) + ": " + describe(e) + " (no se guardó nada)", e);
+        } finally {
+            try { c.setAutoCommit(auto); } catch (Throwable ignored) { }
+        }
+        send("ok", id, "filas=" + sets.size(), "ms=" + (System.nanoTime() - t0) / 1000000);
+    }
+
+    static boolean isBinary(int t) {
+        return t == Types.BINARY || t == Types.VARBINARY || t == Types.LONGVARBINARY || t == Types.BLOB;
+    }
+
+    static int typeOf(Map<String, Integer> types, String col) {
+        Integer t = types.get(col.toLowerCase(Locale.ROOT));
+        return t == null ? Types.OTHER : t;
+    }
+
+    /** ResultSetMetaData: método del driver (PostgreSQL: getBaseTableName…) o el estándar. */
+    static String baseOr(ResultSetMetaData md, String base, String std, int i) {
+        try {
+            Object v = md.getClass().getMethod(base, int.class).invoke(md, i);
+            if (v != null && !v.toString().isEmpty()) return v.toString();
+        } catch (Throwable ignored) { }
+        return safe(md, std, i);
+    }
+
+    static String safe(ResultSetMetaData md, String method, int i) {
+        try {
+            Object v = ResultSetMetaData.class.getMethod(method, int.class).invoke(md, i);
+            return v == null ? null : v.toString();
+        } catch (Throwable e) {
+            return null;
+        }
+    }
+
+    /** Tabla de «select … from X [where/order …]» sin JOIN ni varias tablas; null si no lo es. */
+    static String simpleFrom(String sql) {
+        java.util.regex.Matcher mt = java.util.regex.Pattern
+            .compile("(?is)^\\s*select\\s.+?\\sfrom\\s+([^\\s,;()]+)\\s*(?:(?:as\\s+)?[A-Za-z_]\\w*\\s*)?(?:$|;|\\s(?:where|order|limit|fetch|offset|for)\\b.*)")
+            .matcher(sql.trim());
+        if (!mt.matches()) return null;
+        String t = mt.group(1);
+        String rest = sql.substring(mt.end(1)).toLowerCase(Locale.ROOT);
+        if (rest.matches("(?s).*\\bjoin\\b.*")) return null;
+        String w = t.toLowerCase(Locale.ROOT);
+        return w.equals("where") || w.equals("order") ? null : t;
+    }
+
+    static String unquote(String s) {
+        s = s.trim();
+        if (s.length() >= 2 && (s.charAt(0) == '"' || s.charAt(0) == '`' || s.charAt(0) == '[')) return s.substring(1, s.length() - 1);
+        return s;
+    }
+
+    /** Nombre real (catálogo, esquema, tabla) tal cual lo guarda la base, probando MAYÚS/minús. */
+    static String[] foundName(DatabaseMetaData m, String sch, String tab) {
+        String[][] tries = { { sch, tab }, { up(sch), up(tab) }, { low(sch), low(tab) } };
+        for (String[] tr : tries) {
+            try {
+                ResultSet r = m.getTables(null, tr[0], tr[1], null);
+                try {
+                    if (r.next()) return new String[] { emptyToNull(r.getString("TABLE_CAT")), emptyToNull(r.getString("TABLE_SCHEM")), r.getString("TABLE_NAME") };
+                } finally {
+                    r.close();
+                }
+            } catch (Throwable ignored) { }
+        }
+        return new String[] { null, sch, tab };
+    }
+
+    /** Columnas de la tabla (en minúsculas) → tipo JDBC. */
+    static Map<String, Integer> typesOf(DatabaseMetaData m, String cat, String sch, String tab) {
+        Map<String, Integer> found = new HashMap<String, Integer>();
+        String[][] tries = { { sch, tab }, { up(sch), up(tab) }, { low(sch), low(tab) } };
+        for (String[] tr : tries) {
+            try {
+                ResultSet r = m.getColumns(cat, tr[0], tr[1], null);
+                try {
+                    while (r.next()) found.put(r.getString("COLUMN_NAME").toLowerCase(Locale.ROOT), r.getInt("DATA_TYPE"));
+                } finally {
+                    r.close();
+                }
+            } catch (Throwable ignored) { }
+            if (!found.isEmpty()) break;
+        }
+        return found;
+    }
+
+    /** Columnas de la clave primaria; si no hay, las del primer índice único. */
+    static List<String> keyColumns(DatabaseMetaData m, String cat, String sch, String tab) {
+        String[][] tries = { { sch, tab }, { up(sch), up(tab) }, { low(sch), low(tab) } };
+        for (String[] tr : tries) {
+            TreeMap<Integer, String> pk = new TreeMap<Integer, String>();
+            try {
+                ResultSet r = m.getPrimaryKeys(cat, tr[0], tr[1]);
+                try {
+                    while (r.next()) pk.put(r.getInt("KEY_SEQ"), r.getString("COLUMN_NAME"));
+                } finally {
+                    r.close();
+                }
+            } catch (Throwable ignored) { }
+            if (!pk.isEmpty()) return new ArrayList<String>(pk.values());
+        }
+        for (String[] tr : tries) {
+            LinkedHashMap<String, TreeMap<Integer, String>> idx = new LinkedHashMap<String, TreeMap<Integer, String>>();
+            try {
+                ResultSet r = m.getIndexInfo(cat, tr[0], tr[1], true, false);
+                try {
+                    while (r.next()) {
+                        String name = r.getString("INDEX_NAME"), col = r.getString("COLUMN_NAME");
+                        if (name == null || col == null || r.getBoolean("NON_UNIQUE")) continue;
+                        if (!idx.containsKey(name)) idx.put(name, new TreeMap<Integer, String>());
+                        idx.get(name).put((int) r.getShort("ORDINAL_POSITION"), col);
+                    }
+                } finally {
+                    r.close();
+                }
+            } catch (Throwable ignored) { }
+            if (!idx.isEmpty()) return new ArrayList<String>(idx.values().iterator().next().values());
+        }
+        return new ArrayList<String>();
     }
 
     /** Tipos JDBC de las columnas (Types.OTHER si no se sabe). */

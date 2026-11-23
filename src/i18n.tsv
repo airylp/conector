@@ -324,3 +324,24 @@ Copiadas {filas} filas × {columnas} columnas	Copied {filas} rows × {columnas} 
 Copiar selección	Copy selection	Copier la sélection
 Buscar actualizaciones · versión {v}	Check for updates · version {v}	Rechercher des mises à jour · version {v}
 Hay una versión nueva ({v}): clic para actualizar	A new version is available ({v}): click to update	Une nouvelle version est disponible ({v}) : cliquez pour mettre à jour
+No se puede editar este resultado.	This result can't be edited.	Ce résultat ne peut pas être modifié.
+Editando {tabla}: doble clic en una celda para cambiarla.	Editing {tabla}: double-click a cell to change it.	Modification de {tabla} : double-cliquez sur une cellule pour la changer.
+Guardadas {n} filas en {tabla}.	Saved {n} rows in {tabla}.	{n} lignes enregistrées dans {tabla}.
+Conecta para editar.	Connect to edit.	Connectez-vous pour modifier.
+Vuelve a conectar a la conexión de este resultado para guardar.	Reconnect to this result's connection to save.	Reconnectez-vous à la connexion de ce résultat pour enregistrer.
+✎ Editar	✎ Edit	✎ Modifier
+Cambiar valores de una o varias filas (si el resultado es de una sola tabla con clave primaria)	Change values in one or more rows (if the result comes from a single table with a primary key)	Changer des valeurs d'une ou plusieurs lignes (si le résultat vient d'une seule table avec clé primaire)
+✎ {tabla}	✎ {tabla}	✎ {tabla}
+doble clic en una celda para cambiarla	double-click a cell to change it	double-cliquez sur une cellule pour la changer
+{n} cambios en {filas} filas	{n} changes in {filas} rows	{n} modifications dans {filas} lignes
+👁 Vista previa	👁 Preview	👁 Aperçu
+Ver el SQL que se ejecutará	See the SQL that will run	Voir le SQL qui sera exécuté
+✔ Aplicar	✔ Apply	✔ Appliquer
+Guardar en la base: todo o nada	Save to the database: all or nothing	Enregistrer dans la base : tout ou rien
+Descartar	Discard	Annuler les modifications
+Salir de edición	Stop editing	Quitter la modification
+Vista previa de los cambios	Preview of the changes	Aperçu des modifications
+Al aplicar se ejecutan con parámetros y en una transacción: si un cambio falla o no encuentra su fila, no se guarda nada.	When applied they run with parameters in one transaction: if a change fails or doesn't find its row, nothing is saved.	À l'application, ils s'exécutent avec des paramètres dans une transaction : si une modification échoue ou ne trouve pas sa ligne, rien n'est enregistré.
+Poner NULL	Set NULL	Mettre NULL
+Deshacer este cambio	Undo this change	Annuler cette modification
+Esta pestaña tiene cambios sin guardar: aplícalos o descártalos antes de cerrarla.	This tab has unsaved changes: apply or discard them before closing it.	Cet onglet a des modifications non enregistrées : appliquez-les ou annulez-les avant de le fermer.

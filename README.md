@@ -45,6 +45,15 @@ Español, inglés y francés.
   PostgreSQL y bloques PL/SQL. Se detiene en el primer error (o sigue, si se marca).
 - Un resultado por pestaña y un resumen en «Mensajes»; colores de sintaxis.
 - Historial por conexión (🕘, solo en este equipo, 500 entradas).
+- **Copiar**: clic en una celda copia su valor; clic en los números de fila o en
+  las cabeceras selecciona filas o columnas (Mayús = rango, Ctrl = sueltas) y la
+  esquina «#», todo. Ctrl+C lo copia como TSV (se pega en una hoja de cálculo).
+- **Editar** (✎ en el resultado) si viene de una sola tabla con clave primaria o
+  índice único: doble clic en una celda (Enter guarda, Escape cancela), clic
+  derecho para «Poner NULL» o deshacer. Los cambios de una o varias filas quedan
+  en naranja; «👁 Vista previa» muestra los `UPDATE` y «✔ Aplicar» los ejecuta
+  con parámetros en una transacción (si uno falla o no encuentra su fila, no se
+  guarda nada).
 - **Exportar** (⬇ en cada resultado) a CSV, JSON, Excel (.xlsx) o INSERT:
   lo cargado o *todo*, volviendo a ejecutar la consulta sin límite y escribiendo
   fila a fila (probado con 200 000 filas sin subir la memoria).
