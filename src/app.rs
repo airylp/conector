@@ -409,6 +409,8 @@ pub struct App {
     show_settings: bool,
     settings_edit: Settings,
     pass_edit: PassEdit,
+    /// `variables.txt` tal como está guardado (para saber si hay cambios en Ajustes).
+    vars_applied: String,
     confirm_delete: bool,
     dialog: (Sender<Picked>, Receiver<Picked>),
     java_dl: Option<javadl::Shared>,
@@ -489,6 +491,7 @@ impl App {
             status: String::new(),
             show_settings: false,
             pass_edit: PassEdit { remember: true, ..Default::default() },
+            vars_applied: String::new(),
             confirm_delete: false,
             dialog: std::sync::mpsc::channel(),
             java_dl: None,
@@ -1005,7 +1008,7 @@ impl App {
                 if self.pass_edit.remember {
                     let _ = self.secrets.set_catalog_key(&self.catalog.dir, Some(&k));
                 }
-                self.pass_edit = PassEdit { remember: self.pass_edit.remember, ..Default::default() };
+                self.pass_edit = PassEdit { remember: self.pass_edit.remember, vars: std::mem::take(&mut self.pass_edit.vars), ..Default::default() };
                 self.status = t!("Catálogo desbloqueado.").into();
                 if let Some(id) = self.selected.clone().filter(|_| !self.form.as_ref().is_some_and(|f| f.dirty())) {
                     self.select(id);
@@ -1059,7 +1062,7 @@ impl App {
         self.lock = Some(lock);
         self.key = Some(key);
         let _ = self.secrets.set_catalog_key(&self.catalog.dir, if self.pass_edit.remember { Some(&key) } else { None });
-        self.pass_edit = PassEdit { remember: self.pass_edit.remember, ..Default::default() };
+        self.pass_edit = PassEdit { remember: self.pass_edit.remember, vars: std::mem::take(&mut self.pass_edit.vars), ..Default::default() };
         self.status = tf!("Frase común guardada; {n} contraseñas cifradas de nuevo. Compártela con tu equipo por un canal seguro.", n = n);
         self.reload();
         if let Some(id) = self.selected.clone() {
@@ -1861,6 +1864,7 @@ impl App {
                 self.status = tf!("No se pudieron guardar los ajustes: {e}", e = e);
             }
         }
+        self.vars_applied = self.pass_edit.vars.clone();
         let s = self.settings_edit.clone();
         let java_changed = s.java != self.settings.java || s.jvm != self.settings.jvm;
         let catalog_changed = s.catalog_dir() != self.catalog.dir;
@@ -2724,7 +2728,6 @@ impl App {
 
     fn settings_window(&mut self, ctx: &Context) {
         let mut open = self.show_settings;
-        let mut apply = false;
         let mut pick = false;
         let mut action: Option<u8> = None;
         let mut open_updater = false;
@@ -2929,10 +2932,6 @@ impl App {
                     _ => format!("curl -H 'Authorization: Bearer {}' http://{host}/v1/conexiones", s.serve_token),
                 };
                 ui.add(Label::new(RichText::new(curl).monospace().small()).wrap());
-                ui.add_space(6.0);
-                if ui.button(t!("Aplicar")).clicked() {
-                    apply = true;
-                }
             });
         });
         if open_updater {
@@ -2957,10 +2956,6 @@ impl App {
         }
         if pick {
             self.pick(ctx, true);
-        }
-        if apply {
-            self.apply_settings(ctx);
-            open = false;
         }
         self.show_settings = open;
     }
@@ -3117,9 +3112,20 @@ impl App {
         }
     }
 
+    /// Los Ajustes se aplican solos, sin botón: al cambiar una opción, o al terminar
+    /// de escribir en un campo (o de arrastrar un número), para no reiniciar Java o el
+    /// servicio con cada tecla. Al cerrar la ventana se aplica lo que quede.
+    fn auto_apply_settings(&mut self, ctx: &Context) {
+        let pending = self.settings_edit != self.settings || self.pass_edit.vars != self.vars_applied;
+        if pending && (!self.show_settings || !(ctx.egui_wants_keyboard_input() || ctx.egui_is_using_pointer())) {
+            self.apply_settings(ctx);
+        }
+    }
+
     fn open_settings(&mut self) {
         self.settings_edit = self.settings.clone();
         self.pass_edit.vars = store::vars_text();
+        self.vars_applied = self.pass_edit.vars.clone();
         self.show_settings = true;
     }
 
@@ -3802,6 +3808,7 @@ impl eframe::App for App {
         if self.show_settings {
             self.settings_window(&ctx);
         }
+        self.auto_apply_settings(&ctx);
         if self.confirm_delete {
             self.delete_window(&ctx);
         }
