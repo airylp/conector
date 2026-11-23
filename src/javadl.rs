@@ -146,6 +146,23 @@ pub fn maven_coords(template: &str) -> Option<(&'static str, &'static str)> {
     })
 }
 
+/// Texto que lleva en el nombre el jar del driver de cada plantilla (para saber
+/// si entre los jar de la conexión ya está el suyo).
+pub fn jar_hint(template: &str) -> Option<&'static str> {
+    Some(match template {
+        "PostgreSQL" => "postgresql",
+        "MySQL" => "mysql",
+        "MariaDB" => "mariadb",
+        "Oracle" => "ojdbc",
+        "SQL Server" => "mssql",
+        "DB2" => "jcc",
+        "Firebird" => "jaybird",
+        "H2 (memoria)" => "h2",
+        "SQLite" => "sqlite",
+        _ => return None,
+    })
+}
+
 /// Última versión estable de `maven-metadata.xml` (sin preview/alpha/beta/rc;
 /// en SQL Server, la de Java 11: `.jre11`).
 pub fn pick_version(metadata: &str, artifact: &str) -> Option<String> {

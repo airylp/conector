@@ -78,6 +78,7 @@ vacío = <catálogo>/drivers	empty = <catalog>/drivers	vide = <catalogue>/driver
 Añadir…	Add…	Ajouter…
 ⚠ No hay jar del driver.	⚠ No driver jar.	⚠ Aucun jar de pilote.
 ⚠ No existe: {ruta}	⚠ Does not exist: {ruta}	⚠ N'existe pas : {ruta}
+⚠ No se ve el driver de {nombre} entre los jar.	⚠ The {nombre} driver is not among the jars.	⚠ Le pilote {nombre} ne figure pas parmi les jar.
 ⬇ Descargar driver de {nombre}	⬇ Download {nombre} driver	⬇ Télécharger le pilote {nombre}
 Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)	From Maven Central into the catalog's drivers folder (shared with it)	Depuis Maven Central vers le dossier drivers du catalogue (partagé avec lui)
 Propiedades	Properties	Propriétés

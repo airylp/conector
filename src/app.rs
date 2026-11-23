@@ -2550,10 +2550,21 @@ impl App {
             // ¿Hay jar? Si no, ofrecer descargarlo de Maven Central.
             let jars = f.built().jar_paths(&catalog);
             let missing: Vec<_> = jars.iter().filter(|p| !p.is_file()).collect();
-            if jars.is_empty() || !missing.is_empty() {
+            // Sin jar propio se cargan todos los de drivers/: puede haber otros, pero no el de esta base.
+            let template = template_for(&f.conn.url);
+            let other = template.and_then(javadl::jar_hint).is_some_and(|h| {
+                !jars.iter().any(|p| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains(h)))
+            });
+            if jars.is_empty() || !missing.is_empty() || other {
                 ui.label("");
                 ui.horizontal(|ui| {
-                    let msg = if jars.is_empty() { t!("⚠ No hay jar del driver.").to_owned() } else { tf!("⚠ No existe: {ruta}", ruta = missing[0].display()) };
+                    let msg = if jars.is_empty() {
+                        t!("⚠ No hay jar del driver.").to_owned()
+                    } else if !missing.is_empty() {
+                        tf!("⚠ No existe: {ruta}", ruta = missing[0].display())
+                    } else {
+                        tf!("⚠ No se ve el driver de {nombre} entre los jar.", nombre = template.unwrap_or_default())
+                    };
                     ui.colored_label(ORANGE, msg);
                     match &driver_dl {
                         Some(Dl::Running(m)) => {
@@ -2565,7 +2576,7 @@ impl App {
                         }
                         _ => {}
                     }
-                    if let Some(t) = template_for(&f.conn.url).filter(|t| javadl::maven_coords(t).is_some()) {
+                    if let Some(t) = template.filter(|t| javadl::maven_coords(t).is_some()) {
                         if !matches!(driver_dl, Some(Dl::Running(_))) && ui.button(tf!("⬇ Descargar driver de {nombre}", nombre = t)).on_hover_text(t!("Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)")).clicked() {
                             want_driver = Some(t);
                         }
