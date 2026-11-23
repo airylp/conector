@@ -345,3 +345,5 @@ Al aplicar se ejecutan con parámetros y en una transacción: si un cambio falla
 Poner NULL	Set NULL	Mettre NULL
 Deshacer este cambio	Undo this change	Annuler cette modification
 Esta pestaña tiene cambios sin guardar: aplícalos o descártalos antes de cerrarla.	This tab has unsaved changes: apply or discard them before closing it.	Cet onglet a des modifications non enregistrées : appliquez-les ou annulez-les avant de le fermer.
+Conectar	Connect	Se connecter
+Abrir una sesión con {nombre}	Open a session with {nombre}	Ouvrir une session avec {nombre}

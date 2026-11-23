@@ -2791,8 +2791,18 @@ impl App {
         ui.horizontal(|ui| {
             ui.strong(t!("Consola SQL"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if self.console.session.is_some() && ui.button(t!("Desconectar")).clicked() {
-                    self.disconnect();
+                // «Conectar» con la conexión elegida si no es la de la sesión; si ya lo es (o
+                // está conectando), «Desconectar».
+                let selected = self.form.as_ref().map(|f| (f.conn.id.clone(), f.conn.name.clone()));
+                let connected_here = self.console.session.is_some() && selected.as_ref().is_none_or(|(id, _)| *id == self.console.session_conn);
+                if connected_here || self.console.opening.is_some() {
+                    if ui.button(t!("Desconectar")).clicked() {
+                        self.disconnect();
+                    }
+                } else if let Some((_, name)) = selected {
+                    if ui.add_enabled(self.console.running.is_none(), Button::new(t!("Conectar"))).on_hover_text(tf!("Abrir una sesión con {nombre}", nombre = name)).clicked() {
+                        self.connect();
+                    }
                 }
                 let can = self.form.is_some() || self.console.session.is_some();
                 if self.console.running.is_some() {
