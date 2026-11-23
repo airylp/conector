@@ -322,3 +322,5 @@ Copiar sin encabezados	Copy without headers	Copier sans en-têtes
 Seleccionar todo (Ctrl+C copia la selección)	Select all (Ctrl+C copies the selection)	Tout sélectionner (Ctrl+C copie la sélection)
 Copiadas {filas} filas × {columnas} columnas	Copied {filas} rows × {columnas} columns	Copié {filas} lignes × {columnas} colonnes
 Copiar selección	Copy selection	Copier la sélection
+Buscar actualizaciones · versión {v}	Check for updates · version {v}	Rechercher des mises à jour · version {v}
+Hay una versión nueva ({v}): clic para actualizar	A new version is available ({v}): click to update	Une nouvelle version est disponible ({v}) : cliquez pour mettre à jour

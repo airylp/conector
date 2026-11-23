@@ -2029,13 +2029,18 @@ impl App {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if crate::update::SUPPORTED {
                     let new = self.updater.as_ref().map(|u| u.stage()).filter(|st| matches!(st, crate::update::Stage::Available(_) | crate::update::Stage::Done(_)));
-                    let b = if new.is_some() { Button::new(RichText::new("⟳ ⬆").color(GREEN)) } else { Button::new("⟳") };
-                    let hint = match new {
-                        Some(crate::update::Stage::Available(v)) => tf!("Hay una versión nueva: {v}", v = v),
+                    // Como en buscador: «⬇» con un punto verde en la esquina si hay versión nueva.
+                    let hint = match &new {
+                        Some(crate::update::Stage::Available(v)) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
                         Some(crate::update::Stage::Done(_)) => t!("✔ Versión nueva instalada.").to_owned(),
-                        _ => t!("Buscar actualizaciones…").to_owned(),
+                        _ => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
                     };
-                    if ui.add(b).on_hover_text(hint).clicked() {
+                    let r = ui.selectable_label(self.show_updater, "⬇").on_hover_text(hint);
+                    if new.is_some() {
+                        let c = r.rect.right_top() + vec2(-4.0, 4.0);
+                        ui.painter().circle_filled(c, 3.5, Color32::from_rgb(40, 190, 80));
+                    }
+                    if r.clicked() {
                         update_clicked = true;
                     }
                 }
