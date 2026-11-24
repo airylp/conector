@@ -370,3 +370,35 @@ Historial	History	Historique
 Exportar…	Export…	Exporter…
 Probar otra vez	Test again	Tester à nouveau
 Elige una conexión en el panel lateral para ver sus datos, o crea una con «Nueva».	Pick a connection in the side panel to see its details, or create one with “New”.	Choisissez une connexion dans le panneau latéral pour voir ses détails, ou créez-en une avec « Nouvelle ».
+Actualizar {app}	Update {app}	Mettre à jour {app}
+Buscando la última versión en GitHub…	Looking for the latest version on GitHub…	Recherche de la dernière version sur GitHub…
+Reinstalar de todos modos	Reinstall anyway	Réinstaller quand même
+Se descarga el instalador; al reiniciar, {app} se cierra, se instala la versión nueva y vuelve a abrirse.	The installer is downloaded; on restart, {app} closes, the new version is installed and it opens again.	L'installateur est téléchargé ; au redémarrage, {app} se ferme, la nouvelle version s'installe et se rouvre.
+Se descarga el código, se compila (la primera vez tarda unos minutos) y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.	The source is downloaded, built (the first time takes a few minutes) and the installed app is replaced. You can keep using {app} meanwhile.	Le code est téléchargé, compilé (la première fois prend quelques minutes) et l'app installée est remplacée. Vous pouvez continuer à utiliser {app} pendant ce temps.
+Se descarga la versión publicada y se reemplaza la app instalada. Puedes seguir usando {app} mientras tanto.	The published version is downloaded and replaces the installed app. You can keep using {app} meanwhile.	La version publiée est téléchargée et remplace l'app installée. Vous pouvez continuer à utiliser {app} pendant ce temps.
+Actualizar ahora	Update now	Mettre à jour maintenant
+Reiniciar ahora	Restart now	Redémarrer maintenant
+o úsala la próxima vez que abras {app}	or use it next time you open {app}	ou utilisez-la la prochaine fois que vous ouvrirez {app}
+No se pudo actualizar: {e}	Could not update: {e}	Impossible de mettre à jour : {e}
+Registro:	Log:	Journal :
+Atajos de teclado	Keyboard shortcuts	Raccourcis clavier
+Cerrar la ventana de delante	Close the front window	Fermer la fenêtre au premier plan
+Acerca de {app}	About {app}	À propos de {app}
+Atajos de teclado (F1)	Keyboard shortcuts (F1)	Raccourcis clavier (F1)
+no se pudo	could not	impossible
+Clic para cerrar	Click to close	Cliquer pour fermer
+Conexiones	Connections	Connexions
+Copiar las celdas elegidas (TSV)	Copy the selected cells (TSV)	Copier les cellules choisies (TSV)
+Ejecutar la selección o la sentencia del cursor	Run the selection or the statement at the cursor	Exécuter la sélection ou l'instruction sous le curseur
+Ejecutar todo el script	Run the whole script	Exécuter tout le script
+Elegir la carpeta del catálogo…	Choose the catalog folder…	Choisir le dossier du catalogue…
+Guardar la conexión	Save the connection	Enregistrer la connexion
+Las conexiones se guardan como archivos en el catálogo: compártelo para usarlas en otros equipos.	Connections are saved as files in the catalog: share it to use them on other computers.	Les connexions sont enregistrées comme fichiers dans le catalogue : partagez-le pour les utiliser sur d'autres ordinateurs.
+Mostrar u ocultar la lista de conexiones	Show or hide the connection list	Afficher ou masquer la liste des connexions
+Mostrar u ocultar los datos de la conexión	Show or hide the connection details	Afficher ou masquer les détails de la connexion
+Probar la conexión	Test the connection	Tester la connexion
+Ruta copiada	Path copied	Chemin copié
+desbloqueado	unlocked	déverrouillé
+Aplicar	Apply	Appliquer
+Descargar driver de {nombre}	Download {nombre} driver	Télécharger le pilote {nombre}
+Editar	Edit	Modifier

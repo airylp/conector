@@ -603,6 +603,11 @@ pub struct App {
     /// Comprobación/instalación de versión nueva; `show_updater` = ventana visible.
     updater: Option<crate::update::Updater>,
     show_updater: bool,
+    /// Ventana «Atajos de teclado» y avisos flotantes (comunes).
+    show_keys: bool,
+    avisos: crate::estilo::Avisos,
+    /// Último `status` ya mostrado como aviso.
+    status_seen: String,
 }
 
 fn new_bridge(ctx: &Context, s: &Settings) -> Bridge {
@@ -684,6 +689,9 @@ impl App {
             import_job: None,
             updater: None,
             show_updater: false,
+            show_keys: false,
+            avisos: Default::default(),
+            status_seen: String::new(),
         };
         app.load_lock();
         app.start_server();
@@ -2277,10 +2285,6 @@ impl App {
                         self.open_settings();
                     }
                 }
-                // En macOS «Acerca de» está en el menú de la app.
-                if !cfg!(target_os = "macos") && ui.add(IconButton::new(Icon::Info, Tone::Neutral).selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
-                    self.show_about = !self.show_about;
-                }
                 if crate::update::SUPPORTED {
                     let new = self.updater.as_ref().map(|u| u.stage()).filter(|st| matches!(st, crate::update::Stage::Available(_) | crate::update::Stage::Done(_)));
                     // Como en buscador: ⬇ con un punto verde en la esquina si hay versión nueva.
@@ -2584,7 +2588,7 @@ impl App {
                     if ui.button(t!("Añadir…")).clicked() {
                         pick_jar = true;
                     }
-                    if ui.button("🗁").on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
+                    if ui.add(IconButton::new(Icon::Open, Tone::File)).on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
                         open_drivers = true;
                     }
                 });
@@ -2620,7 +2624,7 @@ impl App {
                         _ => {}
                     }
                     if let Some(t) = template.filter(|t| javadl::maven_coords(t).is_some()) {
-                        if !matches!(driver_dl, Some(Dl::Running(_))) && ui.button(tf!("⬇ Descargar driver de {nombre}", nombre = t)).on_hover_text(t!("Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)")).clicked() {
+                        if !matches!(driver_dl, Some(Dl::Running(_))) && ui.add(IconButton::new(Icon::Download, Tone::Live).label(tf!("Descargar driver de {nombre}", nombre = t))).on_hover_text(t!("Desde Maven Central a la carpeta drivers del catálogo (se comparte con él)")).clicked() {
                             want_driver = Some(t);
                         }
                     }
@@ -2737,7 +2741,7 @@ impl App {
         let mut import_into: Option<String> = None;
         ui.horizontal(|ui| {
             ui.strong(t!("Explorador"));
-            if self.session_id().is_some() && ui.small_button("⟳").on_hover_text(t!("Recargar")).clicked() {
+            if self.session_id().is_some() && ui.add(IconButton::new(Icon::Reload, Tone::Neutral).small()).on_hover_text(t!("Recargar")).clicked() {
                 want = Some(Meta::Schemas);
             }
         });
@@ -3030,7 +3034,7 @@ impl App {
                                 } else if let Some(why) = &t.read_only {
                                     ui.weak(t!("🔒 solo lectura")).on_hover_text(why);
                                 } else if ui
-                                    .add_enabled(session_ok, Button::new(t!("✎ Editar")).small())
+                                    .add_enabled(session_ok, IconButton::new(Icon::Edit, Tone::Edit).label(t!("Editar")).small())
                                     .on_hover_text(t!("Cambiar valores de una o varias filas (si el resultado es de una sola tabla con clave primaria)"))
                                     .clicked()
                                 {
@@ -3055,7 +3059,7 @@ impl App {
                             if n > 0 && ui.add_enabled(can, IconButton::new(Icon::Eye, Tone::Tool).label(t!("Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
                                 want_preview = true;
                             }
-                            if n > 0 && ui.add_enabled(can && !busy && session_ok, Button::new(t!("✔ Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
+                            if n > 0 && ui.add_enabled(can && !busy && session_ok, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
                                 want_apply = true;
                             }
                             if n > 0 && ui.add_enabled(can, Button::new(t!("Descartar")).small()).clicked() {
@@ -3122,7 +3126,7 @@ impl App {
             });
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add_enabled(can, Button::new(t!("✔ Aplicar"))).clicked() {
+                if ui.add_enabled(can, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar"))).clicked() {
                     apply = true;
                 }
                 if applying {
@@ -3464,73 +3468,36 @@ impl App {
         self.show_updater = true;
     }
 
-    fn updater_window(&mut self, ctx: &Context) {
-        use crate::update::Stage;
-        let Some(u) = &self.updater else { return };
-        let stage = u.stage();
-        let mut open = true;
-        let mut run = false;
-        let mut restart: Option<std::path::PathBuf> = None;
-        Window::new(t!("Actualizar conector")).id(win_id(Win::Updater)).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
-            ui.label(tf!("Versión instalada: {v}", v = crate::update::version_label()));
-            match &stage {
-                Stage::Checking => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("Buscando en GitHub…"));
-                    });
-                }
-                Stage::UpToDate(v) => {
-                    ui.colored_label(GREEN, tf!("✔ Ya tienes la última versión ({v}).", v = v));
-                }
-                Stage::Available(v) => {
-                    ui.label(RichText::new(tf!("Hay una versión nueva: {v}", v = v)).strong());
-                    ui.weak(if crate::update::WINDOWS {
-                        t!("Se descarga el instalador y se ejecuta al cerrar conector.")
-                    } else {
-                        t!("Se descarga el código, se compila (la primera vez tarda unos minutos) y se instala. Puedes seguir usando conector mientras tanto.")
-                    });
-                    if ui.button(t!("⬇ Actualizar ahora")).clicked() {
-                        run = true;
-                    }
-                }
-                Stage::Running => {
-                    ui.horizontal(|ui| {
-                        ui.spinner();
-                        ui.label(t!("Actualizando… (puedes seguir trabajando)"));
-                    });
-                }
-                Stage::Done(p) => {
-                    ui.colored_label(GREEN, t!("✔ Versión nueva instalada."));
-                    ui.horizontal(|ui| {
-                        if ui.button(t!("⟳ Reiniciar ahora")).clicked() {
-                            restart = Some(p.clone());
-                        }
-                        ui.weak(t!("o úsala la próxima vez que abras conector"));
-                    });
-                }
-                Stage::Failed(e) => {
-                    ui.colored_label(RED, tf!("✖ {e}", e = e));
-                }
-            }
-            let log = u.log.lock().unwrap();
-            if !log.is_empty() {
-                ui.separator();
-                ScrollArea::vertical().max_height(220.0).stick_to_bottom(true).auto_shrink([false, true]).show(ui, |ui| {
-                    for l in log.iter() {
-                        ui.label(RichText::new(l).monospace().small());
-                    }
-                });
-            }
-        });
-        if run {
-            u.run(ctx.clone());
+    /// Bienvenida (común) con el catálogo vacío.
+    fn welcome(&mut self, ui: &mut Ui) {
+        let logo = crate::estilo::logo(ui.ctx(), &mut self.about_icon);
+        let mut acciones = vec![
+            (Icon::New, t!("Nueva conexión"), ""),
+            (Icon::Gear, t!("Elegir la carpeta del catálogo…"), t!("Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos.")),
+        ];
+        if !self.java_ok {
+            acciones.push((Icon::Cup, t!("Descargar Java portátil"), t!("JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración")));
         }
-        if let Some(p) = restart {
-            match crate::update::relaunch_after_exit(&p) {
+        let ctx = ui.ctx().clone();
+        match crate::estilo::bienvenida(ui, &logo, &acciones, Some(t!("Las conexiones se guardan como archivos en el catálogo: compártelo para usarlas en otros equipos."))) {
+            Some(0) => self.new_connection(),
+            Some(1) => self.open_settings(),
+            Some(2) => self.download_java(&ctx),
+            _ => {}
+        }
+    }
+
+    /// Ventana «Actualizar» (común a las tres aplicaciones: `estilo::ventana_actualizar`).
+    fn updater_window(&mut self, ctx: &Context) {
+        let Some(u) = &self.updater else { return };
+        let mut open = true;
+        match crate::estilo::ventana_actualizar(ctx, u, &mut open, None) {
+            crate::estilo::AccionActualizar::Ejecutar => u.run(ctx.clone()),
+            crate::estilo::AccionActualizar::Reiniciar(p) => match crate::update::relaunch_after_exit(&p) {
                 Ok(()) => ctx.send_viewport_cmd(ViewportCommand::Close),
                 Err(e) => self.status = tf!("No se pudo abrir la versión nueva: {e}", e = e),
-            }
+            },
+            crate::estilo::AccionActualizar::Nada => {}
         }
         if !open {
             self.show_updater = false;
@@ -3683,6 +3650,7 @@ impl App {
             Win::Form => self.show_form && self.form.is_some(),
             Win::Preview => self.show_preview,
             Win::Updater => self.show_updater && !self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running),
+            Win::Keys => self.show_keys,
         }
     }
 
@@ -3694,6 +3662,7 @@ impl App {
             Win::History => self.console.show_history = false,
             Win::Settings => self.show_settings = false,
             Win::Updater => self.show_updater = false,
+            Win::Keys => self.show_keys = false,
             Win::Form => self.show_form = false,
             Win::Preview => self.show_preview = false,
             Win::Test => {
@@ -3712,7 +3681,7 @@ impl App {
             return;
         }
         // Orden de prioridad si no se sabe cuál está delante.
-        let open: Vec<Win> = [Win::Delete, Win::Preview, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings, Win::Form].into_iter().filter(|w| self.is_open(*w)).collect();
+        let open: Vec<Win> = [Win::Delete, Win::Preview, Win::Keys, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings, Win::Form].into_iter().filter(|w| self.is_open(*w)).collect();
         let Some(first) = open.first().copied() else { return };
         let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
         let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
@@ -3721,15 +3690,23 @@ impl App {
         ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape));
     }
 
+    /// Barra de estado común (atajos y «Acerca de» a la derecha).
     fn status_bar(&mut self, ui: &mut Ui) {
+        let (mut keys, mut about) = (self.show_keys, self.show_about);
+        crate::estilo::barra_estado(ui, &mut keys, &mut about, |ui| self.status_left(ui));
+        (self.show_keys, self.show_about) = (keys, about);
+    }
+
+    fn status_left(&mut self, ui: &mut Ui) {
         let mut cancel_export = false;
         ui.horizontal(|ui| {
-            let r = ui.add(Label::new(RichText::new(format!("📁 {}", self.catalog.dir.display())).small()).sense(Sense::click()));
+            let r = crate::estilo::etiqueta(ui, Icon::Open, RichText::new(self.catalog.dir.display().to_string()).small());
             if r.on_hover_text(t!("Catálogo (clic: copiar la ruta)")).clicked() {
                 ui.ctx().copy_text(self.catalog.dir.display().to_string());
+                self.avisos.info(t!("Ruta copiada"));
             }
             if self.key.is_some() {
-                ui.small("🔓");
+                crate::estilo::etiqueta(ui, Icon::Lock, RichText::new(t!("desbloqueado")).small()).on_hover_text(t!("🔓 Desbloqueado en este equipo"));
             }
             if let Some(u) = &self.updater {
                 let label = match u.stage() {
@@ -3767,7 +3744,7 @@ impl App {
                 ui.spinner();
                 let n = j.exporter.as_ref().map_or(0, |x| x.rows());
                 ui.small(tf!("Exportando… {n} filas · {s} s", n = n, s = format!("{:.0}", j.started.elapsed().as_secs_f32())));
-                if ui.small_button("■").on_hover_text(t!("Cancelar")).clicked() {
+                if ui.add(IconButton::new(Icon::Stop, Tone::Edit).small()).on_hover_text(t!("Cancelar")).clicked() {
                     cancel_export = true;
                 }
             }
@@ -3776,8 +3753,6 @@ impl App {
                 ui.spinner();
                 ui.small(tf!("Importando… {n} filas · {s} s", n = j.done_rows, s = format!("{:.0}", j.started.elapsed().as_secs_f32())));
             }
-            ui.separator();
-            ui.small(&self.status);
         });
         if cancel_export {
             self.cancel_export();
@@ -3813,6 +3788,10 @@ impl App {
             }
             if std::env::var_os("CONECTOR_BORRAR").is_some() {
                 self.confirm_delete = true;
+            }
+            self.show_keys = std::env::var_os("CONECTOR_ATAJOS").is_some();
+            if let Ok(m) = std::env::var("CONECTOR_AVISO") {
+                self.status = m;
             }
             if std::env::var_os("CONECTOR_ACERCA").is_some() {
                 self.show_about = true;
@@ -3982,11 +3961,15 @@ enum Win {
     Test,
     Form,
     Preview,
+    Keys,
 }
 
 fn win_id(w: Win) -> Id {
-    if w == Win::Settings {
-        return crate::estilo::id_ajustes();
+    match w {
+        Win::Settings => return crate::estilo::id_ajustes(),
+        Win::Updater => return crate::estilo::id_actualizar(),
+        Win::Keys => return crate::estilo::id_atajos(),
+        _ => {}
     }
     Id::unique(("ventana", w as u8))
 }
@@ -4170,7 +4153,7 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                             // 0 = editar, 1 = NULL, 2 = deshacer, 3 = copiar
                             let mut act: Option<u8> = None;
                             r.context_menu(|ui| {
-                                if ui.button(t!("✎ Editar")).clicked() {
+                                if ui.button(t!("Editar")).clicked() {
                                     act = Some(0);
                                     ui.close();
                                 }
@@ -4294,6 +4277,22 @@ impl eframe::App for App {
                 ctx.request_repaint();
             }
         }
+        let (settings_key, keys_key) = crate::estilo::atajos_comunes(&ctx);
+        if settings_key {
+            if self.show_settings {
+                self.show_settings = false;
+            } else {
+                self.open_settings();
+            }
+        }
+        if keys_key {
+            self.show_keys = !self.show_keys;
+        }
+        // Los mensajes de estado se muestran como avisos flotantes (comunes a las tres apps).
+        if self.status != self.status_seen {
+            self.status_seen = self.status.clone();
+            self.avisos.auto(self.status.clone());
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::S)) {
             self.save();
         }
@@ -4312,12 +4311,18 @@ impl eframe::App for App {
             self.toolbar(ui);
             ui.add_space(1.0);
         });
-        Panel::bottom("estado").show(ui, |ui| self.status_bar(ui));
+        self.status_bar(ui);
         if self.show_sidebar {
             Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         }
         // Explorador y consola ocupan la ventana; los datos de la conexión van en una ventana aparte.
-        CentralPanel::default().show(ui, |ui| self.console_ui(ui));
+        CentralPanel::default().show(ui, |ui| {
+            if self.entries.is_empty() {
+                self.welcome(ui);
+            } else {
+                self.console_ui(ui);
+            }
+        });
         if self.show_form && self.form.is_some() {
             self.form_window(&ctx);
         }
@@ -4347,6 +4352,31 @@ impl eframe::App for App {
         if self.show_updater {
             self.updater_window(&ctx);
         }
+        let mac = |s: &str| crate::estilo::tecla(s);
+        crate::estilo::ventana_atajos(
+            &ctx,
+            &mut self.show_keys,
+            &[
+                (
+                    t!("Conexiones"),
+                    vec![
+                        (mac("Ctrl+S"), t!("Guardar la conexión")),
+                        (mac("Ctrl+T"), t!("Probar la conexión")),
+                        (mac("Ctrl+B"), t!("Mostrar u ocultar la lista de conexiones")),
+                        (mac("Ctrl+Shift+B"), t!("Mostrar u ocultar los datos de la conexión")),
+                    ],
+                ),
+                (
+                    t!("Consola SQL"),
+                    vec![
+                        (mac("Ctrl+Enter"), t!("Ejecutar la selección o la sentencia del cursor")),
+                        (mac("Ctrl+Shift+Enter"), t!("Ejecutar todo el script")),
+                        (mac("Ctrl+C"), t!("Copiar las celdas elegidas (TSV)")),
+                    ],
+                ),
+            ],
+        );
+        self.avisos.mostrar(&ctx);
     }
 }
 
