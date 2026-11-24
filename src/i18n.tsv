@@ -350,3 +350,23 @@ Esta pestaña tiene cambios sin guardar: aplícalos o descártalos antes de cerr
 Conectar	Connect	Se connecter
 Abrir una sesión con {nombre}	Open a session with {nombre}	Ouvrir une session avec {nombre}
 clic en una celda para editarla	click a cell to edit it	cliquez sur une cellule pour la modifier
+↺ Restablecer	↺ Reset	↺ Réinitialiser
+Vuelve a los ajustes predeterminados	Go back to the default settings	Revenir aux réglages par défaut
+Los cambios se aplican y se guardan solos.	Changes are applied and saved automatically.	Les modifications sont appliquées et enregistrées automatiquement.
+Visor y editor de archivos de varios GB	Viewer and editor for multi-GB files	Visionneuse et éditeur de fichiers de plusieurs Go
+Cliente HTTP y SOAP para probar APIs	HTTP and SOAP client for testing APIs	Client HTTP et SOAP pour tester des API
+Nueva	New	Nouvelle
+Duplicar	Duplicate	Dupliquer
+Reiniciar Java	Restart Java	Redémarrer Java
+Reintentar	Retry	Réessayer
+Descargar Java portátil	Download portable Java	Télécharger Java portable
+Catálogo y Java	Catalog and Java	Catalogue et Java
+Actualizaciones	Updates	Mises à jour
+Avisar de versiones nuevas al arrancar	Notify about new versions at startup	Signaler les nouvelles versions au démarrage
+Límite de filas por consulta	Row limit per query	Limite de lignes par requête
+Sin conexiones. Pulsa «Nueva».	No connections. Press “New”.	Aucune connexion. Appuyez sur « Nouvelle ».
+Ejecutar	Run	Exécuter
+Historial	History	Historique
+Exportar…	Export…	Exporter…
+Probar otra vez	Test again	Tester à nouveau
+Elige una conexión en el panel lateral para ver sus datos, o crea una con «Nueva».	Pick a connection in the side panel to see its details, or create one with “New”.	Choisissez une connexion dans le panneau latéral pour voir ses détails, ou créez-en une avec « Nouvelle ».

@@ -6,8 +6,10 @@ mod i18n;
 mod app;
 mod bridge;
 mod crypto;
+mod estilo;
 mod export;
 mod icon;
+mod icons;
 mod javadl;
 #[cfg(target_os = "macos")]
 mod macmenu;
@@ -21,6 +23,15 @@ mod update;
 mod urlparts;
 
 use std::process::ExitCode;
+
+/// Identidad de conector para los módulos comunes (logotipo, «Acerca de»…).
+pub const APP: icon::Marca = icon::Marca {
+    nombre: "conector",
+    descripcion: || t!("Probador de conexiones JDBC con consola SQL"),
+    letra: icon::LETRA_C,
+    color: icon::VERDE,
+    hecho_con: "Rust · egui / eframe · Java (JDBC)",
+};
 
 const HELP: &str = "conector: prueba conexiones JDBC.
 

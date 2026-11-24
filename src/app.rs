@@ -6,6 +6,7 @@
 
 use crate::bridge::{self, Bridge, Event};
 use crate::crypto::{self, Key as CKey, Lock};
+use crate::icons::{Icon, IconButton, Tone};
 use crate::i18n::{self, Lang};
 use crate::javadl::{self, State as Dl};
 use crate::proto::Msg;
@@ -627,6 +628,7 @@ impl App {
         let settings = Settings::load();
         apply_lang(&settings);
         apply_theme(&cc.egui_ctx, &settings);
+        crate::estilo::aplicar(&cc.egui_ctx);
         let catalog = Catalog { dir: settings.catalog_dir() };
         let _ = std::fs::create_dir_all(&catalog.dir);
         let entries = catalog.load();
@@ -2241,62 +2243,62 @@ impl App {
         let ctx = ui.ctx().clone();
         let mut update_clicked = false;
         ui.horizontal(|ui| {
-            if ui.selectable_label(self.show_sidebar, "◧").on_hover_text(t!("Mostrar u ocultar la lista de conexiones (Ctrl+B)")).clicked() {
+            if ui.add(IconButton::new(Icon::Sidebar, Tone::Neutral).selected(self.show_sidebar)).on_hover_text(t!("Mostrar u ocultar la lista de conexiones (Ctrl+B)")).clicked() {
                 self.show_sidebar = !self.show_sidebar;
             }
-            if ui.add_enabled(self.form.is_some(), Button::selectable(self.show_form && self.form.is_some(), "▤")).on_hover_text(t!("Mostrar u ocultar la ventana con los datos de la conexión (Ctrl+Mayús+B)")).clicked() {
+            if ui.add_enabled(self.form.is_some(), IconButton::new(Icon::Detail, Tone::Neutral).selected(self.show_form && self.form.is_some())).on_hover_text(t!("Mostrar u ocultar la ventana con los datos de la conexión (Ctrl+Mayús+B)")).clicked() {
                 self.show_form = !self.show_form;
             }
             ui.separator();
-            if ui.button(t!("+ Nueva")).clicked() {
+            if ui.add(IconButton::new(Icon::New, Tone::File).label(t!("Nueva"))).on_hover_text(t!("Nueva conexión")).clicked() {
                 self.new_connection();
             }
             let dirty = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
-            if ui.add_enabled(dirty, Button::new(t!("💾 Guardar"))).on_hover_text("Ctrl+S").clicked() {
+            if ui.add_enabled(dirty, IconButton::new(Icon::Save, Tone::File).label(t!("Guardar"))).on_hover_text("Ctrl+S").clicked() {
                 self.save();
             }
             let has = self.form.is_some();
-            if ui.add_enabled(has, Button::new(t!("⧉ Duplicar"))).clicked() {
+            if ui.add_enabled(has, IconButton::new(Icon::Copy, Tone::File).label(t!("Duplicar"))).clicked() {
                 self.duplicate();
             }
-            if ui.add_enabled(has, Button::new(t!("🗑 Borrar"))).clicked() {
+            if ui.add_enabled(has, IconButton::new(Icon::Trash, Tone::File).label(t!("Borrar"))).clicked() {
                 self.confirm_delete = true;
             }
             ui.separator();
             let busy = matches!(self.test, TestState::Running { .. });
-            if ui.add_enabled(has && !busy, Button::new(t!("▶ Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
+            if ui.add_enabled(has && !busy, IconButton::new(Icon::Live, Tone::Live).label(t!("Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
                 self.test();
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if crate::update::SUPPORTED {
-                    let new = self.updater.as_ref().map(|u| u.stage()).filter(|st| matches!(st, crate::update::Stage::Available(_) | crate::update::Stage::Done(_)));
-                    // Como en buscador: «⬇» con un punto verde en la esquina si hay versión nueva.
-                    let hint = match &new {
-                        Some(crate::update::Stage::Available(v)) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
-                        Some(crate::update::Stage::Done(_)) => t!("✔ Versión nueva instalada.").to_owned(),
-                        _ => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
-                    };
-                    let r = ui.selectable_label(self.show_updater, "⬇").on_hover_text(hint);
-                    if new.is_some() {
-                        let c = r.rect.right_top() + vec2(-4.0, 4.0);
-                        ui.painter().circle_filled(c, 3.5, Color32::from_rgb(40, 190, 80));
-                    }
-                    if r.clicked() {
-                        update_clicked = true;
-                    }
-                }
-                // En macOS «Acerca de» está en el menú de la app.
-                if !cfg!(target_os = "macos") && ui.add(Button::new("ℹ").selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
-                    self.show_about = !self.show_about;
-                }
-                if ui.button("⚙").on_hover_text(t!("Ajustes")).clicked() {
+                if ui.add(IconButton::new(Icon::Gear, Tone::Neutral).selected(self.show_settings)).on_hover_text(t!("Ajustes")).clicked() {
                     if self.show_settings {
                         self.show_settings = false;
                     } else {
                         self.open_settings();
                     }
                 }
-                if ui.button(t!("⟳ Reiniciar Java")).on_hover_text(t!("Corta conexiones colgadas")).clicked() {
+                // En macOS «Acerca de» está en el menú de la app.
+                if !cfg!(target_os = "macos") && ui.add(IconButton::new(Icon::Info, Tone::Neutral).selected(self.show_about)).on_hover_text(t!("Acerca de conector")).clicked() {
+                    self.show_about = !self.show_about;
+                }
+                if crate::update::SUPPORTED {
+                    let new = self.updater.as_ref().map(|u| u.stage()).filter(|st| matches!(st, crate::update::Stage::Available(_) | crate::update::Stage::Done(_)));
+                    // Como en buscador: ⬇ con un punto verde en la esquina si hay versión nueva.
+                    let hint = match &new {
+                        Some(crate::update::Stage::Available(v)) => tf!("Hay una versión nueva ({v}): clic para actualizar", v = v),
+                        Some(crate::update::Stage::Done(_)) => t!("✔ Versión nueva instalada.").to_owned(),
+                        _ => tf!("Buscar actualizaciones · versión {v}", v = crate::update::version_label()),
+                    };
+                    let r = ui.add(IconButton::new(Icon::Download, Tone::Live).selected(self.show_updater)).on_hover_text(hint);
+                    if new.is_some() {
+                        crate::icons::badge(ui, &r, Color32::from_rgb(40, 190, 80));
+                    }
+                    if r.clicked() {
+                        update_clicked = true;
+                    }
+                }
+                ui.separator();
+                if ui.add(IconButton::new(Icon::Reload, Tone::Tool).label(t!("Reiniciar Java"))).on_hover_text(t!("Corta conexiones colgadas")).clicked() {
                     self.restart_java();
                 }
                 let dl = self.java_dl.as_ref().map(|s| s.lock().unwrap().clone());
@@ -2306,13 +2308,13 @@ impl App {
                         ui.spinner();
                     }
                     Some(Dl::Failed(e)) => {
-                        if ui.button(t!("⬇ Reintentar")).clicked() {
+                        if ui.add(IconButton::new(Icon::Download, Tone::Live).label(t!("Reintentar"))).clicked() {
                             self.download_java(&ctx);
                         }
                         ui.colored_label(RED, e);
                     }
                     _ if !self.java_ok => {
-                        if ui.button(t!("⬇ Descargar Java portátil")).on_hover_text(t!("JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración")).clicked() {
+                        if ui.add(IconButton::new(Icon::Download, Tone::Live).label(t!("Descargar Java portátil"))).on_hover_text(t!("JRE 21 de Eclipse Temurin (~50 MB) en la carpeta de configuración")).clicked() {
                             self.download_java(&ctx);
                         }
                         ui.colored_label(ORANGE, t!("☕ No se encuentra Java"));
@@ -2392,7 +2394,7 @@ impl App {
                 }
             }
             if self.entries.is_empty() && new_unsaved.is_none() {
-                ui.weak(t!("Sin conexiones. Pulsa «+ Nueva»."));
+                ui.weak(t!("Sin conexiones. Pulsa «Nueva»."));
             }
             if let Some(g) = toggle {
                 if !self.folded_groups.remove(&g) {
@@ -2448,7 +2450,7 @@ impl App {
         let has_key = self.key.is_some();
         let driver_dl = self.driver_dl.as_ref().map(|(s, _)| s.lock().unwrap().clone());
         let Some(f) = &mut self.form else {
-            ui.centered_and_justified(|ui| ui.weak(t!("Elige una conexión en el panel lateral para ver sus datos, o crea una con «+ Nueva».")));
+            ui.centered_and_justified(|ui| ui.weak(t!("Elige una conexión en el panel lateral para ver sus datos, o crea una con «Nueva».")));
             return;
         };
         if f.external {
@@ -2677,7 +2679,7 @@ impl App {
             if !matches!(self.test, TestState::Running { .. }) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    again = ui.add_enabled(self.form.is_some(), Button::new(t!("▶ Probar otra vez"))).clicked();
+                    again = ui.add_enabled(self.form.is_some(), IconButton::new(Icon::Live, Tone::Live).label(t!("Probar otra vez"))).clicked();
                     if ui.button(t!("Cerrar")).clicked() {
                         self.test = TestState::Idle;
                     }
@@ -2858,21 +2860,21 @@ impl App {
                 }
                 let can = self.form.is_some() || self.console.session.is_some();
                 if self.console.running.is_some() {
-                    if ui.button(t!("■ Cancelar")).clicked() {
+                    if ui.add(IconButton::new(Icon::Stop, Tone::Edit).label(t!("Cancelar"))).clicked() {
                         self.cancel_sql();
                     }
                 } else {
-                    if ui.add_enabled(can, Button::new(t!("⏩ Script"))).on_hover_text(t!("Todas las sentencias, en orden (Ctrl+Mayús+Enter)")).clicked() {
+                    if ui.add_enabled(can, IconButton::new(Icon::FastForward, Tone::Live).label("Script")).on_hover_text(t!("Todas las sentencias, en orden (Ctrl+Mayús+Enter)")).clicked() {
                         run = Some(true);
                     }
-                    if ui.add_enabled(can, Button::new(t!("▶ Ejecutar"))).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
+                    if ui.add_enabled(can, IconButton::new(Icon::Live, Tone::Live).label(t!("Ejecutar"))).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
                         run = Some(false);
                     }
                 }
-                if ui.button(t!("⬆ Importar CSV")).clicked() {
+                if ui.add(IconButton::new(Icon::Upload, Tone::File).label(t!("Importar CSV"))).clicked() {
                     self.open_import("");
                 }
-                if ui.selectable_label(self.console.show_history, t!("🕘 Historial")).clicked() {
+                if ui.add(IconButton::new(Icon::Clock, Tone::Tool).label(t!("Historial")).selected(self.console.show_history)).clicked() {
                     self.console.show_history = !self.console.show_history;
                 }
                 ui.checkbox(&mut self.console.keep_going, t!("Seguir tras un error"));
@@ -2992,7 +2994,7 @@ impl App {
                             if ui.small_button(t!("Al editor")).on_hover_text(t!("Copia la DDL al editor SQL")).clicked() {
                                 to_editor = Some(text.clone());
                             }
-                            if ui.small_button(t!("📋 Copiar")).clicked() {
+                            if ui.add(IconButton::new(Icon::Copy, Tone::File).label(t!("Copiar")).small()).clicked() {
                                 ui.ctx().copy_text(text.clone());
                                 self.status = t!("DDL copiada.").into();
                             }
@@ -3015,7 +3017,7 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.weak(&t.info);
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                            if ui.small_button(t!("⬇ Exportar…")).clicked() {
+                            if ui.add(IconButton::new(Icon::Download, Tone::File).label(t!("Exportar…")).small()).clicked() {
                                 want_export = true;
                             }
                             let label = if t.sel.is_empty() { t!("Copiar como TSV") } else { t!("Copiar selección") };
@@ -3050,7 +3052,7 @@ impl App {
                                 ui.spinner();
                             }
                             let can = n > 0 && e.applying.is_none();
-                            if n > 0 && ui.add_enabled(can, Button::new(t!("👁 Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
+                            if n > 0 && ui.add_enabled(can, IconButton::new(Icon::Eye, Tone::Tool).label(t!("Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
                                 want_preview = true;
                             }
                             if n > 0 && ui.add_enabled(can && !busy && session_ok, Button::new(t!("✔ Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
@@ -3126,7 +3128,7 @@ impl App {
                 if applying {
                     ui.spinner();
                 }
-                if ui.button(t!("📋 Copiar")).clicked() {
+                if ui.add(IconButton::new(Icon::Copy, Tone::File).label(t!("Copiar"))).clicked() {
                     ui.ctx().copy_text(sql.clone());
                 }
             });
@@ -3192,12 +3194,37 @@ impl App {
         let mut want_java = false;
         let java_dl = self.java_dl.as_ref().map(|s| s.lock().unwrap().clone());
         let drivers = self.catalog.dir.join("drivers");
-        Window::new(t!("Ajustes")).id(win_id(Win::Settings)).open(&mut open).collapsible(false).resizable(false).default_width(560.0).show(ctx, |ui| {
-            ScrollArea::vertical().min_scrolled_height((ctx.content_rect().height() - 140.0).min(720.0)).max_height(ctx.content_rect().height() - 120.0).show(ui, |ui| {
+        let label = crate::update::version_label();
+        let version = crate::estilo::Version { etiqueta: &label, actualizable: crate::update::SUPPORTED };
+        let accion = crate::estilo::ventana_ajustes(ctx, &mut open, &version, |ui| {
+            use crate::estilo::{fila, rejilla, seccion};
+            {
                 let s = &mut self.settings_edit;
-                ui.heading(t!("General"));
-                Grid::new("ajustes").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                    ui.label(t!("Catálogo")).on_hover_text(t!("Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos."));
+                seccion(ui, t!("General"));
+                rejilla(ui, "ajustes_general", |ui| {
+                    fila(ui, t!("Idioma"), Some("Idioma · Language · Langue"), |ui| {
+                        ui.radio_value(&mut s.lang, None, t!("Sistema"));
+                        for l in Lang::ALL {
+                            ui.radio_value(&mut s.lang, Some(l.code().to_owned()), l.name());
+                        }
+                    });
+                    fila(ui, t!("Tema"), None, |ui| {
+                        ui.radio_value(&mut s.dark, None, t!("Sistema"));
+                        ui.radio_value(&mut s.dark, Some(false), t!("Claro"));
+                        ui.radio_value(&mut s.dark, Some(true), t!("Oscuro"));
+                    });
+                    if crate::update::SUPPORTED {
+                        fila(ui, t!("Actualizaciones"), None, |ui| {
+                            ui.checkbox(&mut s.check_updates, t!("Avisar de versiones nuevas al arrancar"));
+                        });
+                    }
+                    fila(ui, t!("Filas máximas"), Some(t!("Límite de filas por consulta")), |ui| {
+                        ui.add(DragValue::new(&mut s.max_rows).range(1..=1_000_000));
+                    });
+                });
+                seccion(ui, t!("Catálogo y Java"));
+                rejilla(ui, "ajustes", |ui| {
+                    ui.strong(t!("Catálogo")).on_hover_text(t!("Carpeta de las conexiones. Ponla en una carpeta compartida (red, git, Syncthing…) para usarlas desde otros equipos."));
                     ui.horizontal(|ui| {
                         let default = store::Settings::default().catalog_dir().display().to_string();
                         ui.add(TextEdit::singleline(&mut s.catalog).hint_text(default).desired_width(320.0));
@@ -3214,40 +3241,22 @@ impl App {
                         }
                         ui.end_row();
                     }
-                    ui.label(t!("Drivers"));
+                    ui.strong(t!("Drivers"));
                     ui.horizontal(|ui| {
                         let path = drivers.display().to_string();
                         ui.allocate_ui(vec2(320.0, ui.spacing().interact_size.y), |ui| {
                             ui.add(Label::new(RichText::new(&path).weak()).truncate()).on_hover_text(&path);
                         });
-                        if ui.button(t!("🗁 Abrir carpeta")).on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
+                        if ui.add(IconButton::new(Icon::Open, Tone::File).label(t!("Abrir carpeta"))).on_hover_text(t!("Abrir la carpeta de drivers descargados")).clicked() {
                             open_drivers = true;
                         }
                     });
                     ui.end_row();
-                    ui.label("Java");
+                    ui.strong("Java");
                     ui.add(TextEdit::singleline(&mut s.java).hint_text(t!("vacío = portátil, JAVA_HOME o el del PATH")).desired_width(320.0));
                     ui.end_row();
-                    ui.label(t!("Opciones JVM"));
+                    ui.strong(t!("Opciones JVM"));
                     ui.add(TextEdit::singleline(&mut s.jvm).hint_text("-Xmx384m").desired_width(320.0));
-                    ui.end_row();
-                    ui.label(t!("Filas máximas"));
-                    ui.add(DragValue::new(&mut s.max_rows).range(1..=1_000_000));
-                    ui.end_row();
-                    ui.label(t!("Tema"));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut s.dark, None, t!("Sistema"));
-                        ui.radio_value(&mut s.dark, Some(false), t!("Claro"));
-                        ui.radio_value(&mut s.dark, Some(true), t!("Oscuro"));
-                    });
-                    ui.end_row();
-                    ui.label(t!("Idioma"));
-                    ui.horizontal(|ui| {
-                        ui.radio_value(&mut s.lang, None, t!("Sistema"));
-                        for l in Lang::ALL {
-                            ui.radio_value(&mut s.lang, Some(l.code().to_owned()), l.name());
-                        }
-                    });
                     ui.end_row();
                 });
                 ui.weak(tf!("Java usado: {ruta}", ruta = bridge::java_path(&s.java).display()));
@@ -3276,21 +3285,13 @@ impl App {
                         }
                     }
                 });
-                ui.horizontal(|ui| {
-                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
-                    if crate::update::SUPPORTED && ui.button(t!("⟳ Buscar actualizaciones…")).clicked() {
-                        open_updater = true;
-                    }
-                    ui.checkbox(&mut s.check_updates, t!("Avisar al arrancar"));
-                });
-
-                ui.separator();
-                ui.heading(t!("Variables de este equipo"));
+            }
+            let s = &mut self.settings_edit;
+                seccion(ui, t!("Variables de este equipo"));
                 ui.label(t!("NOMBRE=valor, una por línea. En el catálogo compartido usa ${VAR}, ${env:VAR} o ${VAR:-x} (x = valor por defecto) en URL, usuario, jar o propiedades: cada equipo pone sus valores."));
                 ui.add(TextEdit::multiline(&mut self.pass_edit.vars).font(TextStyle::Monospace).hint_text("DB_HOST=localhost\nDB_PUERTO=5433").desired_rows(3).desired_width(f32::INFINITY));
 
-                ui.separator();
-                ui.heading(t!("Frase común"));
+                seccion(ui, t!("Frase común"));
                 ui.label(t!("Cifra las contraseñas compartidas del catálogo. Todos los equipos usan la misma frase; cada uno la recuerda por su cuenta."));
                 let p = &mut self.pass_edit;
                 match (&self.lock, &self.key) {
@@ -3333,8 +3334,7 @@ impl App {
                     });
                 }
 
-                ui.separator();
-                ui.heading(t!("Servicio de red"));
+                seccion(ui, t!("Servicio de red"));
                 ui.label(t!("Otros programas, en este u otros equipos, leen y prueban las conexiones por HTTP + JSON."));
                 Grid::new("servicio").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
                     ui.label(t!("Activo"));
@@ -3388,8 +3388,17 @@ impl App {
                     _ => format!("curl -H 'Authorization: Bearer {}' http://{host}/v1/conexiones", s.serve_token),
                 };
                 ui.add(Label::new(RichText::new(curl).monospace().small()).wrap());
-            });
         });
+        match accion {
+            crate::estilo::Accion::BuscarActualizaciones => open_updater = true,
+            crate::estilo::Accion::Restablecer => {
+                // Solo lo de presentación: catálogo, Java y servicio se conservan.
+                let d = store::Settings { max_rows: 1000, check_updates: true, ..Default::default() };
+                let s = &mut self.settings_edit;
+                (s.dark, s.lang, s.max_rows, s.check_updates) = (d.dark, d.lang, d.max_rows, d.check_updates);
+            }
+            crate::estilo::Accion::Nada => {}
+        }
         if open_updater {
             self.open_updater(ctx);
         }
@@ -3601,106 +3610,24 @@ impl App {
         self.menu.sync([self.show_sidebar, self.show_form && self.form.is_some()]);
     }
 
-    /// «Acerca de»: versión, Java, carpetas, licencia y enlaces al proyecto en GitHub.
+    /// «Acerca de» (ventana común a las tres aplicaciones: `estilo::acerca`),
+    /// con Java y las carpetas de configuración y del catálogo.
     fn about_window(&mut self, ctx: &Context) {
         if !self.show_about {
             return;
         }
-        let icon = self
-            .about_icon
-            .get_or_insert_with(|| {
-                let n = 128;
-                let img = ColorImage::from_rgba_unmultiplied([n, n], &crate::icon::rgba(n));
-                ctx.load_texture("acerca-icono", img, TextureOptions::LINEAR)
-            })
-            .clone();
-        let mut close = false;
-        let mut update = false;
-        let link = |ui: &mut Ui, text: &str, url: &str| {
-            if ui.link(text).on_hover_text(url).clicked() {
-                open_url(url);
-            }
-        };
+        let logo = crate::estilo::logo(ctx, &mut self.about_icon);
         let java = self.java.clone().unwrap_or_else(|| tf!("{ruta} (sin arrancar)", ruta = bridge::java_path(&self.settings.java).display()));
         let config = store::config_dir().map(|d| d.display().to_string()).unwrap_or_default();
         let catalog = self.catalog.dir.display().to_string();
-        let modal = Modal::new(Id::NULL.with("about")).show(ctx, |ui| {
-            ui.set_width(480.0);
-            ui.horizontal(|ui| {
-                ui.add(Image::new(&icon).fit_to_exact_size(vec2(64.0, 64.0)));
-                ui.vertical(|ui| {
-                    ui.heading("conector");
-                    ui.label(tf!("Versión {v}", v = crate::update::version_label()));
-                    ui.label(RichText::new(t!("Probador de conexiones JDBC con consola SQL")).weak());
-                });
-            });
-            ui.add_space(8.0);
-            ui.separator();
-            Grid::new("about-grid").num_columns(2).spacing([12.0, 6.0]).show(ui, |ui| {
-                ui.label(RichText::new(t!("Autor")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(GITHUB_NAME);
-                    link(ui, &format!("@{GITHUB_USER}"), &format!("https://github.com/{GITHUB_USER}"));
-                });
-                ui.end_row();
-                ui.label(RichText::new("GitHub").strong());
-                link(ui, &format!("github.com/{GITHUB_USER}/{GITHUB_REPO}"), &repo_url(""));
-                ui.end_row();
-                ui.label(RichText::new(t!("Sitio web")).strong());
-                link(ui, GITHUB_BLOG.trim_start_matches("https://"), GITHUB_BLOG);
-                ui.end_row();
-                ui.label(RichText::new(t!("Licencia")).strong());
-                ui.horizontal(|ui| {
-                    ui.label(tf!("MIT · © 2026 {user}", user = GITHUB_USER));
-                    link(ui, t!("ver"), &repo_url("/blob/main/LICENSE"));
-                });
-                ui.end_row();
-                ui.label(RichText::new(t!("Hecho con")).strong());
-                ui.label("Rust · egui / eframe · Java (JDBC)");
-                ui.end_row();
-                ui.label(RichText::new("Java").strong());
-                ui.add(Label::new(java).truncate());
-                ui.end_row();
-                ui.label(RichText::new(t!("Configuración")).strong());
-                ui.horizontal(|ui| {
-                    ui.add(Label::new(RichText::new(&config).weak()).truncate());
-                    if !config.is_empty() && ui.small_button("🗁").on_hover_text(t!("Abrir carpeta")).clicked() {
-                        open_url(&config);
-                    }
-                });
-                ui.end_row();
-                ui.label(RichText::new(t!("Catálogo")).strong());
-                ui.horizontal(|ui| {
-                    ui.add(Label::new(RichText::new(&catalog).weak()).truncate());
-                    if ui.small_button("🗁").on_hover_text(t!("Abrir carpeta")).clicked() {
-                        open_url(&catalog);
-                    }
-                });
-                ui.end_row();
-            });
-            ui.separator();
-            ui.horizontal(|ui| {
-                link(ui, t!("Versiones"), &repo_url("/releases"));
-                ui.label("·");
-                link(ui, t!("Reportar un problema"), &repo_url("/issues/new"));
-                ui.label("·");
-                link(ui, t!("Código fuente"), &repo_url(""));
-            });
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if crate::update::SUPPORTED && ui.button(t!("Buscar actualizaciones…")).clicked() {
-                    update = true;
-                    close = true;
-                }
-                if ui.button(t!("Cerrar")).clicked() {
-                    close = true;
-                }
-            });
+        let label = crate::update::version_label();
+        let version = crate::estilo::Version { etiqueta: &label, actualizable: crate::update::SUPPORTED };
+        let accion = crate::estilo::acerca(ctx, &mut self.show_about, &logo, &version, |ui| {
+            crate::estilo::fila_dato(ui, "Java", &java);
+            crate::estilo::fila_carpeta(ui, t!("Configuración"), &config);
+            crate::estilo::fila_carpeta(ui, t!("Catálogo"), &catalog);
         });
-        if close || modal.should_close() {
-            self.show_about = false;
-        }
-        if update {
+        if accion == crate::estilo::Accion::BuscarActualizaciones {
             self.open_updater(ctx);
         }
     }
@@ -3726,11 +3653,11 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let can_save = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
-                    if ui.add_enabled(can_save, Button::new(t!("💾 Guardar"))).on_hover_text("Ctrl+S").clicked() {
+                    if ui.add_enabled(can_save, IconButton::new(Icon::Save, Tone::File).label(t!("Guardar"))).on_hover_text("Ctrl+S").clicked() {
                         self.save();
                     }
                     let busy = matches!(self.test, TestState::Running { .. });
-                    if ui.add_enabled(!busy, Button::new(t!("▶ Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
+                    if ui.add_enabled(!busy, IconButton::new(Icon::Live, Tone::Live).label(t!("Probar conexión"))).on_hover_text("Ctrl+T").clicked() {
                         self.test();
                     }
                     if ui.button(t!("Cerrar")).clicked() {
@@ -4020,16 +3947,8 @@ fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usiz
     job
 }
 
-const GITHUB_USER: &str = "airylp";
-const GITHUB_NAME: &str = "Airy";
-const GITHUB_REPO: &str = "conector";
-const GITHUB_BLOG: &str = "https://decodigo.com";
-
-fn repo_url(rest: &str) -> String {
-    format!("https://github.com/{GITHUB_USER}/{GITHUB_REPO}{rest}")
-}
-
 /// Abre un enlace o una carpeta con el programa del sistema (sin esperar).
+#[cfg(target_os = "macos")]
 fn open_url(url: &str) {
     let _ = open_in_file_manager(std::path::Path::new(url));
 }
@@ -4066,6 +3985,9 @@ enum Win {
 }
 
 fn win_id(w: Win) -> Id {
+    if w == Win::Settings {
+        return crate::estilo::id_ajustes();
+    }
     Id::unique(("ventana", w as u8))
 }
 
@@ -4088,7 +4010,7 @@ fn error_box(ui: &mut Ui, e: &ErrInfo, max_h: f32) {
         ui.horizontal(|ui| {
             ui.colored_label(RED, RichText::new(t!("✖ Error")).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.small_button(t!("📋 Copiar")).on_hover_text(t!("Copia el error completo")).clicked() {
+                if ui.add(IconButton::new(Icon::Copy, Tone::File).label(t!("Copiar")).small()).on_hover_text(t!("Copia el error completo")).clicked() {
                     let text = if e.detail.is_empty() { e.msg.clone() } else { format!("{}\n{}", e.msg, e.detail) };
                     ui.ctx().copy_text(text);
                 }
