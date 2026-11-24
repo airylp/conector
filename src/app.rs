@@ -4236,7 +4236,7 @@ fn boxed(ui: &mut Ui, w: f32, h: f32, widget: impl Widget) -> Response {
 }
 
 impl eframe::App for App {
-    fn on_exit(&mut self) {
+    fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         crate::tunnel::close_all();
         if let Some(w) = self.window.as_ref().filter(|_| std::env::var_os("CONECTOR_CAPTURA").is_none() || std::env::var_os("CONECTOR_VENTANA").is_some()) {
             w.save();

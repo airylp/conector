@@ -132,7 +132,7 @@ fn gui() -> ExitCode {
     let options = eframe::NativeOptions { viewport: viewport_extra(options.viewport), ..options };
     let saved_monitor = saved.as_ref().and_then(|w| w.monitor);
     let (hide_sidebar, hide_form) = saved.as_ref().map_or((false, false), |w| (w.hide_sidebar, w.hide_form));
-    match eframe::run_native("conector", options, Box::new(move |cc| {
+    match estilo::arrancar("conector", options, Box::new(move |cc| {
         let mut app = app::App::new(cc);
         app.saved_monitor = saved_monitor;
         app.show_sidebar = !hide_sidebar;
