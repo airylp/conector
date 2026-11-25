@@ -85,9 +85,11 @@ impl MacMenu {
 
         let undo = item(t!("Deshacer"), "Cmd+Z", cmd(Key::Z));
         let redo = item(t!("Rehacer"), "Cmd+Shift+Z", cmd_shift(Key::Z));
-        let cut = item(t!("Cortar"), "Cmd+X", Cmd::Cut);
-        let copy = item(t!("Copiar"), "Cmd+C", Cmd::Copy);
-        let paste = item(t!("Pegar"), "Cmd+V", Cmd::Paste);
+        // Sin atajo: Cmd+X/C/V llegan así a egui, que copia y pega al momento. Con el
+        // atajo en el menú, macOS se quedaba la tecla y el pegado llegaba tarde o se perdía.
+        let cut = item(t!("Cortar"), "", Cmd::Cut);
+        let copy = item(t!("Copiar"), "", Cmd::Copy);
+        let paste = item(t!("Pegar"), "", Cmd::Paste);
         let all = item(t!("Seleccionar todo"), "Cmd+A", cmd(Key::A));
         let edit = Submenu::with_items(t!("Edición"), true, &[&undo, &redo, &sep(), &cut, &copy, &paste, &all]).unwrap();
 
@@ -150,7 +152,7 @@ pub fn inject(ctx: &Context, raw: &mut RawInput, c: Cmd) -> Option<Cmd> {
         }
         Cmd::Copy => raw.events.push(Event::Copy),
         Cmd::Cut => raw.events.push(Event::Cut),
-        Cmd::Paste => ctx.send_viewport_cmd(ViewportCommand::RequestPaste),
+        Cmd::Paste => crate::estilo::pedir_pegado(ctx),
         Cmd::Quit => ctx.send_viewport_cmd(ViewportCommand::Close),
         Cmd::About | Cmd::Update | Cmd::Settings | Cmd::Url(_) => return Some(c),
     }
