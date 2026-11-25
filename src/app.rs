@@ -632,6 +632,8 @@ fn apply_lang(s: &Settings) {
 }
 
 fn apply_theme(ctx: &Context, s: &Settings) {
+    let graphite = s.graphite && s.dark == Some(false);
+    crate::estilo::grafito(ctx, graphite);
     ctx.set_theme(match s.dark {
         Some(true) => ThemePreference::Dark,
         Some(false) => ThemePreference::Light,
@@ -2862,8 +2864,9 @@ impl App {
 
     fn console_ui(&mut self, ui: &mut Ui) {
         ui.set_min_height(ui.available_height());
-        Panel::left("explorador_panel").resizable(true).default_size(220.0).min_size(120.0).show(ui, |ui| self.explorer_ui(ui));
-        CentralPanel::default().show(ui, |ui| self.sql_ui(ui));
+        let p = crate::estilo::Paleta::de(ui);
+        Panel::left("explorador_panel").resizable(true).default_size(220.0).min_size(120.0).frame(Frame::side_top_panel(ui.style()).fill(p.fondo)).show(ui, |ui| self.explorer_ui(ui));
+        CentralPanel::default().frame(Frame::central_panel(ui.style()).fill(p.central)).show(ui, |ui| self.sql_ui(ui));
     }
 
     fn sql_ui(&mut self, ui: &mut Ui) {
@@ -3349,9 +3352,12 @@ impl App {
                         }
                     });
                     fila(ui, t!("Tema"), None, |ui| {
-                        ui.radio_value(&mut s.dark, None, t!("Sistema"));
-                        ui.radio_value(&mut s.dark, Some(false), t!("Claro"));
-                        ui.radio_value(&mut s.dark, Some(true), t!("Oscuro"));
+                        let mut v = (s.dark, s.graphite && s.dark == Some(false));
+                        ui.radio_value(&mut v, (None, false), t!("Sistema"));
+                        ui.radio_value(&mut v, (Some(false), false), t!("Claro"));
+                        ui.radio_value(&mut v, (Some(false), true), t!("Grafito claro")).on_hover_text(t!("Claro con paneles grises y separaciones marcadas"));
+                        ui.radio_value(&mut v, (Some(true), false), t!("Oscuro"));
+                        (s.dark, s.graphite) = v;
                     });
                     if crate::update::SUPPORTED {
                         fila(ui, t!("Actualizaciones"), None, |ui| {
@@ -3535,7 +3541,7 @@ impl App {
                 // Solo lo de presentación: catálogo, Java y servicio se conservan.
                 let d = store::Settings { max_rows: 1000, check_updates: true, ..Default::default() };
                 let s = &mut self.settings_edit;
-                (s.dark, s.lang, s.max_rows, s.check_updates) = (d.dark, d.lang, d.max_rows, d.check_updates);
+                (s.dark, s.graphite, s.lang, s.max_rows, s.check_updates) = (d.dark, d.graphite, d.lang, d.max_rows, d.check_updates);
             }
             crate::estilo::Accion::Nada => {}
         }
@@ -4619,7 +4625,8 @@ impl eframe::App for App {
             Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         }
         // Explorador y consola ocupan la ventana; los datos de la conexión van en una ventana aparte.
-        CentralPanel::default().show(ui, |ui| {
+        let central = crate::estilo::Paleta::de(ui).central;
+        CentralPanel::default().frame(Frame::central_panel(ui.style()).fill(central)).show(ui, |ui| {
             if self.entries.is_empty() {
                 self.welcome(ui);
             } else {
