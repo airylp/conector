@@ -42,7 +42,6 @@ Driver descargado: {ruta}	Driver downloaded: {ruta}	Pilote téléchargé : {ruta
 No se pudieron guardar los ajustes: {e}	Could not save the settings: {e}	Impossible d'enregistrer les réglages : {e}
 + Nueva	+ New	+ Nouvelle
 💾 Guardar	💾 Save	💾 Enregistrer
-⧉ Duplicar	⧉ Duplicate	⧉ Dupliquer
 🗑 Borrar	🗑 Delete	🗑 Supprimer
 ▶ Probar conexión	▶ Test connection	▶ Tester la connexion
 Ajustes	Settings	Réglages
@@ -330,9 +329,9 @@ Editando {tabla}: clic en una celda para cambiarla.	Editing {tabla}: click a cel
 Guardadas {n} filas en {tabla}.	Saved {n} rows in {tabla}.	{n} lignes enregistrées dans {tabla}.
 Conecta para editar.	Connect to edit.	Connectez-vous pour modifier.
 Vuelve a conectar a la conexión de este resultado para guardar.	Reconnect to this result's connection to save.	Reconnectez-vous à la connexion de ce résultat pour enregistrer.
-✎ Editar	✎ Edit	✎ Modifier
+✏ Editar	✏ Edit	✏ Modifier
 Cambiar valores de una o varias filas (si el resultado es de una sola tabla con clave primaria)	Change values in one or more rows (if the result comes from a single table with a primary key)	Changer des valeurs d'une ou plusieurs lignes (si le résultat vient d'une seule table avec clé primaire)
-✎ {tabla}	✎ {tabla}	✎ {tabla}
+✏ {tabla}	✏ {tabla}	✏ {tabla}
 Clic en una celda para cambiarla; clic derecho: NULL, deshacer, copiar	Click a cell to change it; right-click: NULL, undo, copy	Cliquez sur une cellule pour la changer ; clic droit : NULL, annuler, copier
 {n} cambios en {filas} filas	{n} changes in {filas} rows	{n} modifications dans {filas} lignes
 👁 Vista previa	👁 Preview	👁 Aperçu
@@ -362,7 +361,6 @@ Reintentar	Retry	Réessayer
 Descargar Java portátil	Download portable Java	Télécharger Java portable
 Catálogo y Java	Catalog and Java	Catalogue et Java
 Actualizaciones	Updates	Mises à jour
-Avisar de versiones nuevas al arrancar	Notify about new versions at startup	Signaler les nouvelles versions au démarrage
 Límite de filas por consulta	Row limit per query	Limite de lignes par requête
 Sin conexiones. Pulsa «Nueva».	No connections. Press “New”.	Aucune connexion. Appuyez sur « Nouvelle ».
 Ejecutar	Run	Exécuter
@@ -414,3 +412,12 @@ Conectó en {ms} ms	Connected in {ms} ms	Connecté en {ms} ms
 Grafito claro	Light graphite	Graphite clair
 Grafito oscuro	Dark graphite	Graphite sombre
 Grafito: paneles en otro gris y separaciones marcadas	Graphite: panels in a different grey and clear separations	Graphite : panneaux d’un autre gris et séparations marquées
+Proyecto	Project	Projet
+Este equipo	This computer	Cet ordinateur
+Dibujo	Rendering	Rendu
+Copiar información	Copy information	Copier les informations
+Versión, sistema y carpetas, para pegarlos al reportar un problema	Version, system and folders, to paste when reporting a problem	Version, système et dossiers, à coller pour signaler un problème
+OpenGL (wgpu no disponible)	OpenGL (wgpu not available)	OpenGL (wgpu indisponible)
+Recuperación	Recovery	Récupération
+Java encontrados	Java found	Java trouvés
+Avisar de versiones nuevas (punto verde en ⬇; mira GitHub al abrir y cada 6 horas)	Notify about new versions (green dot on ⬇; checks GitHub at startup and every 6 hours)	Signaler les nouvelles versions (point vert sur ⬇ ; consulte GitHub au démarrage et toutes les 6 heures)

@@ -189,7 +189,7 @@ struct ResultTab {
     text: Option<String>,
     /// Filas/columnas seleccionadas para copiar.
     sel: TableSel,
-    /// Modo edición («✎ Editar»), si la consulta es de una tabla con clave.
+    /// Modo edición («✏ Editar»), si la consulta es de una tabla con clave.
     edit: Option<EditState>,
     /// Petición «editable» en curso para esta pestaña.
     edit_req: Option<u64>,
@@ -576,6 +576,8 @@ pub struct App {
     /// Menú de la barra de macOS.
     #[cfg(target_os = "macos")]
     menu: crate::macmenu::MacMenu,
+    /// Comprobación de versiones nuevas en segundo plano (común: al abrir y cada 6 h).
+    vigia: crate::estilo::Vigia,
     /// Opciones del menú recogidas en `raw_input_hook` que atiende `mac_menu`.
     #[cfg(target_os = "macos")]
     menu_cmds: Vec<crate::macmenu::Cmd>,
@@ -703,14 +705,11 @@ impl App {
             show_updater: false,
             show_keys: false,
             avisos: Default::default(),
+            vigia: Default::default(),
             status_seen: String::new(),
         };
         app.load_lock();
         app.start_server();
-        // Aviso discreto: solo si se instaló con install.sh (lleva commit) y no en pruebas.
-        if app.settings.check_updates && crate::update::SUPPORTED && crate::update::current_commit().is_some() && std::env::var_os("CONECTOR_CAPTURA").is_none() {
-            app.updater = Some(crate::update::Updater::check(cc.egui_ctx.clone()));
-        }
         app
     }
 
@@ -1055,7 +1054,7 @@ impl App {
         self.console.session.as_ref().filter(|(s, _)| !s.is_empty()).map(|(s, _)| s.clone())
     }
 
-    /// «✎ Editar»: pregunta a Java si el resultado de la pestaña activa se puede editar.
+    /// «✏ Editar»: pregunta a Java si el resultado de la pestaña activa se puede editar.
     fn start_edit(&mut self) {
         let Some(s) = self.session_id() else {
             self.status = t!("Conecta para editar.").into();
@@ -3102,7 +3101,7 @@ impl App {
                     if let Some(e) = &mut t.edit {
                         ui.horizontal_wrapped(|ui| {
                             let n = e.changes.len();
-                            ui.label(RichText::new(tf!("✎ {tabla}", tabla = e.sql_table)).strong());
+                            ui.label(RichText::new(tf!("✏ {tabla}", tabla = e.sql_table)).strong());
                             if n == 0 {
                                 ui.weak(t!("clic en una celda para editarla")).on_hover_text(t!("Clic en una celda para cambiarla; clic derecho: NULL, deshacer, copiar"));
                             } else {
@@ -3355,7 +3354,7 @@ impl App {
                     });
                     if crate::update::SUPPORTED {
                         fila(ui, t!("Actualizaciones"), None, |ui| {
-                            ui.checkbox(&mut s.check_updates, t!("Avisar de versiones nuevas al arrancar"));
+                            ui.checkbox(&mut s.check_updates, t!("Avisar de versiones nuevas (punto verde en ⬇; mira GitHub al abrir y cada 6 horas)"));
                         });
                     }
                     fila(ui, t!("Filas máximas"), Some(t!("Límite de filas por consulta")), |ui| {
@@ -4591,6 +4590,12 @@ impl eframe::App for App {
             } else {
                 ctx.request_repaint();
             }
+        }
+        // Versión nueva (al abrir y cada 6 h): se queda como el actualizador para que
+        // la marquen el botón ⬇ y la barra de estado.
+        self.vigia.tick(&ctx, self.settings.check_updates && std::env::var_os("CONECTOR_CAPTURA").is_none());
+        if self.vigia.nueva(None).is_some() && !self.updater.as_ref().is_some_and(|u| matches!(u.stage(), crate::update::Stage::Available(_) | crate::update::Stage::Running | crate::update::Stage::Done(_))) {
+            self.updater = self.vigia.comprobacion.take();
         }
         let (settings_key, keys_key) = crate::estilo::atajos_comunes(&ctx);
         if settings_key {

@@ -782,6 +782,7 @@ dependencies = [
  "base64",
  "chacha20poly1305",
  "eframe",
+ "egui",
  "getrandom 0.4.3",
  "muda",
  "rcgen",
