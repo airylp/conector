@@ -4004,7 +4004,7 @@ impl App {
             || self.console.queued
             || self.pending.values().any(|p| matches!(p, Pending::Meta(_) | Pending::Editable(_)))
             // Ventanas abiertas por la prueba: esperar a que terminen de aparecer.
-            || CAPTURE_WAIT.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |w| w.checked_sub(1)).is_ok();
+            || capture_wait_tick();
         if self.debug_frames < 30 || (busy && (self.debug_frames < 900 || (self.debug_frames >= 10_000 && self.debug_frames < 30_000))) {
             ctx.request_repaint();
             return;
@@ -4030,6 +4030,17 @@ impl App {
 
 /// Fotogramas que el modo captura espera antes de la foto (ventanas que aparecen).
 static CAPTURE_WAIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Gasta un fotograma de espera; `true` si quedaba alguno. (Sin `fetch_update`, que en
+/// Rust reciente está obsoleto, ni `try_update`, que no existe en versiones anteriores.)
+fn capture_wait_tick() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    let w = CAPTURE_WAIT.load(Relaxed);
+    if w > 0 {
+        CAPTURE_WAIT.store(w - 1, Relaxed);
+    }
+    w > 0
+}
 
 /// «hace 5 min» a partir de segundos.
 fn ago(secs: u64) -> String {
