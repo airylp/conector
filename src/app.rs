@@ -11,6 +11,7 @@ use crate::i18n::{self, Lang};
 use crate::javadl::{self, State as Dl};
 use crate::proto::Msg;
 use crate::server;
+use crate::estilo::Paleta;
 use crate::store::{self, Catalog, Conn, Entry, SaveError, Secrets, Settings};
 use eframe::egui::*;
 use std::collections::HashMap;
@@ -2385,8 +2386,9 @@ impl App {
                         // Clic en el grupo: plegar/desplegar sus conexiones.
                         let arrow = if folded { "⏵" } else { "⏷" };
                         let n = self.entries.iter().filter(|x| x.conn.group == c.group).count();
-                        let text = if folded { format!("{arrow} 🗀 {}  ({n})", c.group) } else { format!("{arrow} 🗀 {}", c.group) };
-                        if ui.add(Label::new(RichText::new(text).strong()).sense(Sense::click())).clicked() {
+                        let text = if folded { format!("{arrow} {}  ({n})", c.group.to_uppercase()) } else { format!("{arrow} {}", c.group.to_uppercase()) };
+                        let col = Paleta::de(ui).apagado;
+                        if ui.add(Label::new(RichText::new(text).size(11.0).strong().color(col).extra_letter_spacing(0.5)).selectable(false).sense(Sense::click())).clicked() {
                             toggle = Some(c.group.clone());
                         }
                     }
@@ -2474,13 +2476,13 @@ impl App {
         // Ancho de los campos: lo que queda tras la columna de etiquetas (máx. 760).
         let w = (ui.available_width() - 150.0).clamp(200.0, 760.0);
         Grid::new("form").num_columns(2).spacing([10.0, 6.0]).min_col_width(130.0).show(ui, |ui| {
-            ui.label(t!("Nombre"));
+            form_label(ui, t!("Nombre"));
             ui.add(TextEdit::singleline(&mut f.conn.name).desired_width(w));
             ui.end_row();
-            ui.label(t!("Grupo"));
+            form_label(ui, t!("Grupo"));
             ui.add(TextEdit::singleline(&mut f.conn.group).hint_text(t!("p. ej. Producción")).desired_width(w));
             ui.end_row();
-            ui.label(t!("Tipo"));
+            form_label(ui, t!("Tipo"));
             ui.horizontal(|ui| {
                 ComboBox::from_id_salt("plantilla").selected_text(template_for(&f.conn.url).unwrap_or(t!("Plantilla…"))).show_ui(ui, |ui| {
                     for (name, cls, url, _) in TEMPLATES {
@@ -2498,10 +2500,10 @@ impl App {
                 use crate::urlparts::Kind;
                 let mut changed = false;
                 if p.kind != Kind::File {
-                    ui.label(t!("Servidor"));
+                    form_label(ui, t!("Servidor"));
                     ui.horizontal(|ui| {
                         changed |= ui.add(TextEdit::singleline(&mut p.host).hint_text("localhost").desired_width((w - 150.0).max(120.0))).changed();
-                        ui.label(t!("Puerto"));
+                        form_label(ui, t!("Puerto"));
                         let def = crate::urlparts::default_port(&p);
                         let r = ui.add(TextEdit::singleline(&mut p.port).hint_text(def).desired_width(70.0));
                         if r.changed() {
@@ -2519,7 +2521,7 @@ impl App {
                     _ if p.prefix == "jdbc:firebirdsql:" => t!("Ruta de la base"),
                     _ => t!("Base de datos"),
                 };
-                ui.label(label);
+                form_label(ui, label);
                 ui.horizontal(|ui| {
                     let extra = if p.kind == Kind::File || matches!(p.kind, Kind::OracleService | Kind::OracleSid) { 110.0 } else { 0.0 };
                     changed |= ui.add(TextEdit::singleline(&mut p.db).desired_width((w - extra).max(120.0))).changed();
@@ -2552,7 +2554,7 @@ impl App {
                 ui.weak(t!("URL con formato especial: edítala directamente."));
                 ui.end_row();
             }
-            ui.label(t!("URL JDBC"));
+            form_label(ui, t!("URL JDBC"));
             ui.add(TextEdit::singleline(&mut f.conn.url).font(TextStyle::Monospace).hint_text("jdbc:…").desired_width(w));
             ui.end_row();
             // Con variables: cómo queda en este equipo.
@@ -2570,10 +2572,10 @@ impl App {
                 }
                 ui.end_row();
             }
-            ui.label(t!("Usuario"));
+            form_label(ui, t!("Usuario"));
             ui.add(TextEdit::singleline(&mut f.conn.user).desired_width(w));
             ui.end_row();
-            ui.label(t!("Contraseña"));
+            form_label(ui, t!("Contraseña"));
             ui.horizontal(|ui| {
                 let hint = if f.locked { t!("cifrada: desbloquea el catálogo") } else { "" };
                 ui.add(TextEdit::singleline(&mut f.password).password(true).hint_text(hint).desired_width((w - 230.0).max(120.0)));
@@ -2589,10 +2591,10 @@ impl App {
                 ui.colored_label(ORANGE, t!("Para compartirla cifrada hace falta la frase común (Ajustes)."));
                 ui.end_row();
             }
-            ui.label(t!("Clase del driver"));
+            form_label(ui, t!("Clase del driver"));
             ui.add(TextEdit::singleline(&mut f.conn.driver).font(TextStyle::Monospace).hint_text(t!("vacío = la busca en los jar según la URL")).desired_width(w));
             ui.end_row();
-            ui.label(t!("Jar del driver")).on_hover_text(t!("Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo."));
+            form_label(ui, t!("Jar del driver")).on_hover_text(t!("Uno por línea: archivos o carpetas, relativos al catálogo. Vacío = carpeta «drivers» del catálogo."));
             ui.horizontal_top(|ui| {
                 ui.add(TextEdit::multiline(&mut f.jars).font(TextStyle::Monospace).hint_text(t!("vacío = <catálogo>/drivers")).desired_rows(2).desired_width((w - 90.0).max(120.0)));
                 ui.vertical(|ui| {
@@ -2642,7 +2644,7 @@ impl App {
                 });
                 ui.end_row();
             }
-            ui.label(t!("Túnel SSH")).on_hover_text(t!("Usa el ssh del sistema (claves, agente, ~/.ssh/config). Nunca pide contraseña: hace falta una clave."));
+            form_label(ui, t!("Túnel SSH")).on_hover_text(t!("Usa el ssh del sistema (claves, agente, ~/.ssh/config). Nunca pide contraseña: hace falta una clave."));
             ui.horizontal(|ui| {
                 ui.add(TextEdit::singleline(&mut f.conn.ssh).hint_text(t!("usuario@bastión[:puerto] (vacío = sin túnel)")).desired_width((w * 0.5).max(160.0)));
                 if !f.conn.ssh.trim().is_empty() {
@@ -2658,13 +2660,13 @@ impl App {
                 });
                 ui.end_row();
             }
-            ui.label(t!("Propiedades"));
+            form_label(ui, t!("Propiedades"));
             ui.add(TextEdit::multiline(&mut f.props).font(TextStyle::Monospace).hint_text(t!("clave=valor, una por línea")).desired_rows(2).desired_width(w));
             ui.end_row();
-            ui.label(t!("Espera (s)"));
+            form_label(ui, t!("Espera (s)"));
             ui.add(DragValue::new(&mut f.conn.timeout).range(1..=600));
             ui.end_row();
-            ui.label(t!("Notas"));
+            form_label(ui, t!("Notas"));
             ui.add(TextEdit::multiline(&mut f.conn.notes).desired_rows(1).desired_width(w));
             ui.end_row();
         });
@@ -2751,7 +2753,7 @@ impl App {
         let mut insert: Option<String> = None;
         let mut import_into: Option<String> = None;
         ui.horizontal(|ui| {
-            ui.strong(t!("Explorador"));
+            section_title(ui, t!("Explorador"));
             if self.session_id().is_some() && ui.add(IconButton::new(Icon::Reload, Tone::Neutral).small()).on_hover_text(t!("Recargar")).clicked() {
                 want = Some(Meta::Schemas);
             }
@@ -2858,7 +2860,7 @@ impl App {
     fn sql_ui(&mut self, ui: &mut Ui) {
         let mut run: Option<bool> = None;
         ui.horizontal(|ui| {
-            ui.strong(t!("Consola SQL"));
+            section_title(ui, t!("Consola SQL"));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // «Conectar» con la conexión elegida si no es la de la sesión; si ya lo es (o
                 // está conectando), «Desconectar».
@@ -2882,7 +2884,7 @@ impl App {
                     if ui.add_enabled(can, IconButton::new(Icon::FastForward, Tone::Live).label("Script")).on_hover_text(t!("Todas las sentencias, en orden (Ctrl+Mayús+Enter)")).clicked() {
                         run = Some(true);
                     }
-                    if ui.add_enabled(can, IconButton::new(Icon::Live, Tone::Live).label(t!("Ejecutar"))).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
+                    if ui.add_enabled(can, IconButton::new(Icon::Live, Tone::Live).label(t!("Ejecutar")).primary()).on_hover_text(t!("La selección o la sentencia del cursor (Ctrl+Enter)")).clicked() {
                         run = Some(false);
                     }
                 }
@@ -2896,7 +2898,10 @@ impl App {
                 // Estado de la sesión en el hueco que queda (recortado si no cabe).
                 match (&self.console.session, self.console.opening) {
                     (Some((_, n)), None) => {
-                        ui.add(Label::new(RichText::new(format!("● {n}")).color(GREEN)).truncate());
+                        // Si no queda sitio para leerla, mejor no ponerla.
+                        if ui.available_width() > 70.0 {
+                            crate::estilo::insignia(ui, &format!("● {n}"), crate::estilo::color_tipo(ui, crate::estilo::Tipo::Exito));
+                        }
                     }
                     (Some((_, n)), Some(_)) => {
                         ui.add(Label::new(tf!("Conectando a {nombre}…", nombre = n)).truncate());
@@ -2971,26 +2976,36 @@ impl App {
         });
         let mut close = None;
         if !self.console.log.is_empty() || !self.console.tabs.is_empty() {
-            ScrollArea::horizontal().id_salt("pestanas").max_height(28.0).show(ui, |ui| {
+            ScrollArea::horizontal().id_salt("pestanas").max_height(30.0).show(ui, |ui| {
                 ui.horizontal(|ui| {
+                    // Raya de fondo (debajo del subrayado de la pestaña activa).
+                    let base = ui.painter().add(Shape::Noop);
+                    ui.spacing_mut().item_spacing.x = 4.0;
+                    ui.add_space(4.0);
                     if !self.console.log.is_empty() {
                         let errors = self.console.log.iter().filter(|(ok, _)| !ok).count();
-                        let label = if errors > 0 { RichText::new(tf!("Mensajes ({n} ✖)", n = errors)).color(RED) } else { RichText::new(tf!("Mensajes ({n})", n = self.console.log.len())) };
-                        if ui.selectable_label(self.console.active.is_none(), label).clicked() {
+                        let (text, color) = if errors > 0 { (tf!("Mensajes ({n} ✖)", n = errors), Some(RED)) } else { (tf!("Mensajes ({n})", n = self.console.log.len()), None) };
+                        if tab_label(ui, self.console.active.is_none(), &text, color).clicked() {
                             self.console.active = None;
                         }
+                        ui.add_space(12.0);
                     }
                     for (i, t) in self.console.tabs.iter().enumerate() {
-                        if ui.selectable_label(self.console.active == Some(i), &t.title).on_hover_text(&t.info).clicked() {
+                        if tab_label(ui, self.console.active == Some(i), &t.title, None).on_hover_text(&t.info).clicked() {
                             self.console.active = Some(i);
                         }
-                        if ui.small_button("×").on_hover_text(t!("Cerrar esta pestaña")).clicked() {
+                        if ui.add(IconButton::text_only("×", Tone::Neutral).small()).on_hover_text(t!("Cerrar esta pestaña")).clicked() {
                             close = Some(i);
                         }
-                        ui.add_space(4.0);
+                        ui.add_space(8.0);
                     }
+                    let r = ui.min_rect();
+                    let y = r.bottom() + 4.0;
+                    let w = ui.clip_rect();
+                    ui.painter().set(base, Shape::line_segment([pos2(w.left(), y), pos2(w.right().max(r.right()), y)], Stroke::new(1.0, Paleta::de(ui).borde)));
                 });
             });
+            ui.add_space(4.0);
         }
         if let Some(i) = close {
             let c = &mut self.console;
@@ -3062,7 +3077,7 @@ impl App {
                                 if t.edit_req.is_some() {
                                     ui.spinner();
                                 } else if let Some(why) = &t.read_only {
-                                    ui.weak(t!("🔒 solo lectura")).on_hover_text(why);
+                                    crate::estilo::insignia(ui, t!("🔒 solo lectura"), Paleta::de(ui).apagado).on_hover_text(why);
                                 } else if ui
                                     .add_enabled(session_ok, IconButton::new(Icon::Edit, Tone::Edit).label(t!("Editar")).small())
                                     .on_hover_text(t!("Cambiar valores de una o varias filas (si el resultado es de una sola tabla con clave primaria)"))
@@ -3721,7 +3736,7 @@ impl App {
                 ui.separator();
                 ui.horizontal(|ui| {
                     let can_save = self.form.as_ref().is_some_and(|f| f.dirty() || f.force);
-                    if ui.add_enabled(can_save, IconButton::new(Icon::Save, Tone::File).label(t!("Guardar"))).on_hover_text("Ctrl+S").clicked() {
+                    if ui.add_enabled(can_save, IconButton::new(Icon::Save, Tone::File).label(t!("Guardar")).primary()).on_hover_text("Ctrl+S").clicked() {
                         self.save();
                     }
                     let busy = matches!(self.test, TestState::Running { .. });
@@ -4125,11 +4140,44 @@ fn split_cols(m: &Msg) -> Vec<(String, String)> {
 
 /// Error completo: mensaje y detalle (SQLState, clase, causas) siempre visibles,
 /// seleccionables, con desplazamiento propio si es largo y botón para copiarlo.
+/// Título de sección pequeño, en mayúsculas y apagado (como `text-xs uppercase text-zinc-500`).
+fn section_title(ui: &mut Ui, text: &str) -> Response {
+    ui.label(RichText::new(text.to_uppercase()).size(11.0).strong().color(Paleta::de(ui).apagado).extra_letter_spacing(0.6))
+}
+
+/// Etiqueta de un campo de formulario (algo más suave que el texto).
+fn form_label(ui: &mut Ui, text: &str) -> Response {
+    let p = Paleta::de(ui);
+    ui.label(RichText::new(text).color(p.texto.lerp_to_gamma(p.apagado, 0.45)))
+}
+
+/// Pestaña: texto apagado; la activa con el color de la app y subrayada.
+fn tab_label(ui: &mut Ui, selected: bool, text: &str, color: Option<Color32>) -> Response {
+    let p = Paleta::de(ui);
+    let accent = crate::estilo::acento_texto(ui);
+    let col = color.unwrap_or(if selected { accent } else { p.apagado });
+    let mut rt = RichText::new(text).color(col);
+    if selected {
+        rt = rt.strong();
+    }
+    let r = ui.add(Label::new(rt).selectable(false).sense(Sense::click()));
+    let y = r.rect.bottom() + 4.0;
+    if selected {
+        ui.painter().line_segment([pos2(r.rect.left() - 2.0, y), pos2(r.rect.right() + 2.0, y)], Stroke::new(2.0, accent));
+    } else if r.hovered() {
+        ui.painter().line_segment([pos2(r.rect.left() - 2.0, y), pos2(r.rect.right() + 2.0, y)], Stroke::new(2.0, p.borde_fuerte));
+    }
+    r
+}
+
 fn error_box(ui: &mut Ui, e: &ErrInfo, max_h: f32) {
-    Frame::group(ui.style()).stroke(Stroke::new(1.0, RED.gamma_multiply(0.6))).show(ui, |ui| {
+    // Alerta al estilo de Tailwind: fondo rojo suave, borde fino y raya a la izquierda.
+    let c = crate::estilo::color_tipo(ui, crate::estilo::Tipo::Error);
+    let dark = ui.visuals().dark_mode;
+    let fr = Frame::new().fill(c.gamma_multiply(if dark { 0.12 } else { 0.06 })).stroke(Stroke::new(1.0, c.gamma_multiply(0.35))).corner_radius(6.0).inner_margin(Margin { left: 14, right: 10, top: 8, bottom: 8 }).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
-            ui.colored_label(RED, RichText::new(t!("✖ Error")).strong());
+            crate::estilo::etiqueta(ui, Icon::Error, RichText::new(t!("Error")).strong().color(c));
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 if ui.add(IconButton::new(Icon::Copy, Tone::File).label(t!("Copiar")).small()).on_hover_text(t!("Copia el error completo")).clicked() {
                     let text = if e.detail.is_empty() { e.msg.clone() } else { format!("{}\n{}", e.msg, e.detail) };
@@ -4138,13 +4186,15 @@ fn error_box(ui: &mut Ui, e: &ErrInfo, max_h: f32) {
             });
         });
         ScrollArea::vertical().id_salt(("error", &e.msg)).max_height(max_h.max(60.0)).auto_shrink([false, true]).show(ui, |ui| {
-            ui.add(Label::new(RichText::new(&e.msg).strong()).wrap().selectable(true));
+            ui.add(Label::new(RichText::new(&e.msg).strong().color(Paleta::de(ui).texto)).wrap().selectable(true));
             if !e.detail.is_empty() {
                 ui.add_space(4.0);
-                ui.add(Label::new(RichText::new(&e.detail).monospace()).wrap().selectable(true));
+                ui.add(Label::new(RichText::new(&e.detail).monospace().size(12.0).color(Paleta::de(ui).apagado)).wrap().selectable(true));
             }
         });
     });
+    let r = fr.response.rect;
+    ui.painter().rect_filled(Rect::from_min_max(r.min, pos2(r.min.x + 3.0, r.max.y)), CornerRadius { nw: 6, sw: 6, ne: 0, se: 0 }, c);
 }
 
 fn tsv(cols: &[(String, String)], rows: &[Box<[Option<Box<str>>]>]) -> String {
@@ -4179,6 +4229,7 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
     let total_w: f32 = c.widths.iter().sum::<f32>() + 48.0;
     let mut copied = None;
     let stripe = ui.visuals().faint_bg_color;
+    let divide = Paleta::de(ui).borde.gamma_multiply(0.7);
     let weak = ui.visuals().weak_text_color();
     // Fondo propio: algo más claro (tema claro) u oscuro (tema oscuro) que el panel.
     let v = ui.visuals();
@@ -4202,6 +4253,8 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                 }
             });
         };
+        let head_bg = Paleta::de(ui).codigo;
+        let head_col = Paleta::de(ui).apagado;
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 0.0;
             let bg = ui.painter().add(Shape::Noop);
@@ -4216,7 +4269,7 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                 let head = match &c.edit {
                     Some(e) if e.key.contains(&j) => RichText::new(format!("🔑 {n}")).strong().monospace(),
                     Some(e) if e.base.get(j).is_none_or(|b| b.is_none()) => RichText::new(n).monospace().color(weak),
-                    _ => RichText::new(n).strong().monospace(),
+                    _ => RichText::new(n).strong().monospace().color(head_col),
                 };
                 let r = boxed(ui, *w, row_h, Label::new(head).truncate().selectable(false).sense(Sense::click()));
                 if c.sel.col(j) && !c.sel.all {
@@ -4228,6 +4281,8 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                 let r = if t.is_empty() { r } else { r.on_hover_text(t) };
                 menu(&r, &mut copy_menu);
             }
+            // Fondo de la cabecera (como `thead bg-zinc-50`), debajo de la selección.
+            shapes.insert(0, Shape::rect_filled(ui.min_rect(), 0.0, head_bg));
             ui.painter().set(bg, Shape::Vec(shapes));
         });
         ui.separator();
@@ -4360,10 +4415,13 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                         }
                     }
                 });
+                // Filas separadas por una línea fina (como `divide-y`) y resaltadas bajo el ratón.
                 let mut shapes = Vec::new();
-                if i % 2 == 1 {
-                    shapes.push(Shape::rect_filled(r.response.rect, 0.0, stripe));
+                let rr = r.response.rect;
+                if ui.rect_contains_pointer(rr) {
+                    shapes.push(Shape::rect_filled(rr, 0.0, stripe));
                 }
+                shapes.push(Shape::line_segment([pos2(rr.left(), rr.bottom() - 0.5), pos2(rr.right(), rr.bottom() - 0.5)], Stroke::new(1.0, divide)));
                 if row_sel {
                     shapes.push(Shape::rect_filled(r.response.rect, 0.0, sel_bg));
                 }
