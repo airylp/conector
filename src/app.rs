@@ -1866,7 +1866,7 @@ impl App {
         let connected = self.console.session.as_ref().is_some_and(|(s, _)| !s.is_empty());
         Window::new(t!("Exportar")).id(win_id(Win::Export)).open(&mut open).collapsible(false).resizable(false).show(ctx, |ui| {
             Grid::new("exportar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label(t!("Formato"));
+                form_label(ui, t!("Formato"));
                 ui.horizontal(|ui| {
                     for f in crate::export::Format::ALL {
                         if ui.radio_value(&mut d.fmt, f, f.label()).changed() {
@@ -1875,7 +1875,7 @@ impl App {
                     }
                 });
                 ui.end_row();
-                ui.label(t!("Filas"));
+                form_label(ui, t!("Filas"));
                 ui.vertical(|ui| {
                     ui.radio_value(&mut d.all, false, tf!("Solo las cargadas ({n})", n = loaded));
                     ui.add_enabled_ui(has_sql && connected, |ui| {
@@ -1884,11 +1884,11 @@ impl App {
                 });
                 ui.end_row();
                 if d.fmt == crate::export::Format::Insert {
-                    ui.label(t!("Tabla"));
+                    form_label(ui, t!("Tabla"));
                     ui.add(TextEdit::singleline(&mut d.table).desired_width(260.0));
                     ui.end_row();
                 }
-                ui.label(t!("Archivo"));
+                form_label(ui, t!("Archivo"));
                 ui.horizontal(|ui| {
                     ui.add(TextEdit::singleline(&mut d.path).desired_width(320.0));
                     if ui.button(t!("Elegir…")).clicked() {
@@ -1897,7 +1897,8 @@ impl App {
                 });
                 ui.end_row();
             });
-            if ui.button(t!("Exportar")).clicked() {
+            ui.add_space(8.0);
+            if ui.add(crate::estilo::boton_primario(t!("Exportar"))).clicked() {
                 go = true;
             }
         });
@@ -1936,7 +1937,7 @@ impl App {
         let busy = self.import_job.is_some();
         Window::new(t!("Importar CSV")).id(win_id(Win::Import)).open(&mut open).collapsible(false).default_width(560.0).show(ctx, |ui| {
             Grid::new("importar").num_columns(2).spacing([10.0, 6.0]).show(ui, |ui| {
-                ui.label(t!("Archivo"));
+                form_label(ui, t!("Archivo"));
                 ui.horizontal(|ui| {
                     let r = ui.add(TextEdit::singleline(&mut d.path).desired_width(320.0));
                     new_file |= r.lost_focus();
@@ -1945,7 +1946,7 @@ impl App {
                     }
                 });
                 ui.end_row();
-                ui.label(t!("Separador"));
+                form_label(ui, t!("Separador"));
                 ui.horizontal(|ui| {
                     for (c, l) in [(b',', ","), (b';', ";"), (b'\t', "Tab"), (b'|', "|")] {
                         reload |= ui.radio_value(&mut d.sep, c, l).changed();
@@ -1954,33 +1955,39 @@ impl App {
                     ui.checkbox(&mut d.empty_null, t!("Vacío = NULL"));
                 });
                 ui.end_row();
-                ui.label(t!("Tabla"));
+                form_label(ui, t!("Tabla"));
                 ui.add(TextEdit::singleline(&mut d.table).hint_text(t!("esquema.tabla (ya existente)")).desired_width(320.0));
                 ui.end_row();
-                ui.label(t!("Columnas"));
+                form_label(ui, t!("Columnas"));
                 ui.add(TextEdit::singleline(&mut d.cols).hint_text(t!("en el orden del CSV, separadas por comas")).desired_width(420.0));
                 ui.end_row();
             });
             if !d.preview.is_empty() {
-                ui.separator();
-                ui.weak(t!("Vista previa"));
-                ScrollArea::horizontal().id_salt("vista_csv").show(ui, |ui| {
-                    Grid::new("vista_previa").striped(true).show(ui, |ui| {
-                        for (i, rec) in d.preview.iter().enumerate() {
-                            for v in rec {
-                                let t = RichText::new(short_title(v)).monospace();
-                                ui.label(if i == 0 && d.header { t.strong() } else { t });
+                ui.add_space(6.0);
+                section_title(ui, t!("Vista previa"));
+                let p = Paleta::de(ui);
+                Frame::new().fill(p.codigo).stroke(Stroke::new(1.0, p.borde)).corner_radius(6.0).inner_margin(Margin::same(8)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ScrollArea::horizontal().id_salt("vista_csv").show(ui, |ui| {
+                        Grid::new("vista_previa").spacing([14.0, 4.0]).show(ui, |ui| {
+                            for (i, rec) in d.preview.iter().enumerate() {
+                                for v in rec {
+                                    let t = RichText::new(short_title(v)).monospace();
+                                    ui.label(if i == 0 && d.header { t.strong().color(p.apagado) } else { t.color(p.texto) });
+                                }
+                                ui.end_row();
                             }
-                            ui.end_row();
-                        }
+                        });
                     });
                 });
             }
             if let Some(e) = &d.error {
-                ui.colored_label(RED, e);
+                ui.add_space(4.0);
+                crate::estilo::alerta(ui, crate::estilo::Tipo::Error, e);
             }
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.add_enabled(!busy, Button::new(t!("Importar"))).clicked() {
+                if ui.add_enabled(!busy, crate::estilo::boton_primario(t!("Importar"))).clicked() {
                     go = true;
                 }
                 ui.weak(t!("Lotes de 500 filas, cada uno en una transacción."));
@@ -2696,8 +2703,8 @@ impl App {
             if !matches!(self.test, TestState::Running { .. }) {
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    again = ui.add_enabled(self.form.is_some(), IconButton::new(Icon::Live, Tone::Live).label(t!("Probar otra vez"))).clicked();
-                    if ui.button(t!("Cerrar")).clicked() {
+                    again = ui.add_enabled(self.form.is_some(), IconButton::new(Icon::Live, Tone::Live).label(t!("Probar otra vez")).framed()).clicked();
+                    if ui.add(IconButton::text_only(t!("Cerrar"), Tone::Neutral).framed()).clicked() {
                         self.test = TestState::Idle;
                     }
                 });
@@ -2722,8 +2729,10 @@ impl App {
             }
             TestState::Ok(info) => {
                 let get = |k: &str| info.iter().find(|(a, _)| a == k).map(|(_, v)| v.as_str()).unwrap_or("");
-                ui.colored_label(GREEN, RichText::new(tf!("✔ Conectó en {ms} ms", ms = get("ms"))).strong());
-                Grid::new("info").num_columns(2).spacing([10.0, 2.0]).show(ui, |ui| {
+                crate::estilo::alerta(ui, crate::estilo::Tipo::Exito, &tf!("Conectó en {ms} ms", ms = get("ms")));
+                ui.add_space(8.0);
+                let p = Paleta::de(ui);
+                crate::estilo::tarjeta(ui, "", |ui| { Grid::new("info").num_columns(2).spacing([16.0, 6.0]).show(ui, |ui| {
                     for (k, label) in [
                         ("producto", t!("Base de datos")),
                         ("version", t!("Versión")),
@@ -2737,12 +2746,12 @@ impl App {
                     ] {
                         let v = get(k);
                         if !v.is_empty() {
-                            ui.weak(label);
-                            ui.label(v);
+                            ui.label(RichText::new(label).color(p.apagado));
+                            ui.add(Label::new(RichText::new(v).color(p.texto)).wrap().selectable(true));
                             ui.end_row();
                         }
                     }
-                });
+                }); });
             }
             TestState::Err(e) => error_box(ui, e, max_h),
         }
@@ -3894,6 +3903,10 @@ impl App {
             let want = std::env::var("CONECTOR_ELEGIR").unwrap_or_default();
             if let Some(id) = self.entries.iter().find(|e| e.conn.name.contains(&want)).map(|e| e.conn.id.clone()) {
                 self.select(id);
+                // CONECTOR_SIN_FORMULARIO: elegirla sin abrir la ventana de sus datos.
+                if std::env::var_os("CONECTOR_SIN_FORMULARIO").is_some() {
+                    self.show_form = false;
+                }
             }
         }
         if self.debug_frames == 3 {
@@ -3945,6 +3958,19 @@ impl App {
             if let (false, Some((full, kind))) = (asked, found) {
                 self.meta(Meta::Ddl(full, kind));
             }
+        }
+        // CONECTOR_VENTANA_EXPORTAR / CONECTOR_VENTANA_IMPORTAR=ruta.csv: abren esas ventanas (para verlas).
+        if self.debug_frames > 3 && self.debug_frames < 900 && self.console.running.is_none() && !self.console.tabs.is_empty() && self.export_dialog.is_none() && std::env::var_os("CONECTOR_VENTANA_EXPORTAR").is_some() {
+            self.open_export();
+            CAPTURE_WAIT.store(40, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(csv) = std::env::var("CONECTOR_VENTANA_IMPORTAR").ok().filter(|_| self.debug_frames == 5) {
+            self.open_import("PUBLIC.NOTA");
+            if let Some(d) = &mut self.import_dialog {
+                d.path = csv;
+                Self::import_preview(d, true);
+            }
+            CAPTURE_WAIT.store(40, std::sync::atomic::Ordering::Relaxed);
         }
         // CONECTOR_EXPORTAR=ruta.ext exporta TODO el resultado visible al terminar el SQL;
         // CONECTOR_IMPORTAR=ruta.csv|tabla importa ese CSV.
