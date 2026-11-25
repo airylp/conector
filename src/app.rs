@@ -4042,7 +4042,7 @@ fn highlight_job(text: &str, style: &Style, current: Option<std::ops::Range<usiz
         (Tok::Comment, false) => Color32::from_rgb(90, 130, 80),
         (Tok::Plain, _) => style.visuals.text_color(),
     };
-    let bg = style.visuals.faint_bg_color.gamma_multiply(if dark { 2.5 } else { 1.5 });
+    let bg = style.visuals.selection.bg_fill.gamma_multiply(if dark { 0.3 } else { 0.35 });
     let mut job = text::LayoutJob::default();
     let cur = current.unwrap_or(0..0);
     for (r, tok) in crate::sql::tokens(text) {
