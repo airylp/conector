@@ -2376,7 +2376,7 @@ impl App {
         ScrollArea::both().id_salt("lista_conexiones").auto_shrink(false).show(ui, |ui| {
             ui.style_mut().wrap_mode = Some(TextWrapMode::Extend);
             if let Some(n) = &new_unsaved {
-                let _ = ui.selectable_label(true, RichText::new(format!("● {n}")).italics());
+                let _ = crate::estilo::fila_lista(ui, true, RichText::new(format!("● {n}")).italics());
             }
             let mut group: Option<&str> = None;
             let mut toggle: Option<String> = None;
@@ -2408,7 +2408,7 @@ impl App {
                 let lock = if c.secret.is_empty() { "" } else { " 🔑" };
                 let indent = if c.group.is_empty() { "" } else { "    " };
                 let label = if dirty { format!("{indent}● {}{lock}", c.name) } else { format!("{indent}🗄 {}{lock}", c.name) };
-                let r = ui.selectable_label(sel, label).on_hover_text(&c.url);
+                let r = crate::estilo::fila_lista(ui, sel, label).on_hover_text(&c.url);
                 // Clic: elegir y conectar (el explorador muestra sus tablas). Doble clic: ver sus datos.
                 if r.clicked() {
                     clicked = Some(c.id.clone());
@@ -2448,13 +2448,13 @@ impl App {
             return;
         }
         let mut go = false;
-        Frame::group(ui.style()).fill(ui.visuals().faint_bg_color).show(ui, |ui| {
+        crate::estilo::alerta_con(ui, crate::estilo::Tipo::Aviso, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.label(RichText::new(t!("🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:")).color(ORANGE));
+                ui.label(RichText::new(t!("🔒 Este catálogo tiene contraseñas compartidas cifradas. Frase común:")).color(Paleta::de(ui).texto));
                 let r = ui.add(TextEdit::singleline(&mut self.pass_edit.unlock).password(true).desired_width(180.0));
                 go = r.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
                 ui.checkbox(&mut self.pass_edit.remember, t!("Recordar en este equipo"));
-                go |= ui.button(t!("Desbloquear")).clicked();
+                go |= ui.add(crate::estilo::boton_primario(t!("Desbloquear"))).clicked();
             });
         });
         if go {
@@ -3113,7 +3113,7 @@ impl App {
                             if n > 0 && ui.add_enabled(can, IconButton::new(Icon::Eye, Tone::Tool).label(t!("Vista previa")).small()).on_hover_text(t!("Ver el SQL que se ejecutará")).clicked() {
                                 want_preview = true;
                             }
-                            if n > 0 && ui.add_enabled(can && !busy && session_ok, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar")).small()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
+                            if n > 0 && ui.add_enabled(can && !busy && session_ok, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar")).small().primary()).on_hover_text(t!("Guardar en la base: todo o nada")).clicked() {
                                 want_apply = true;
                             }
                             if n > 0 && ui.add_enabled(can, Button::new(t!("Descartar")).small()).clicked() {
@@ -3179,12 +3179,15 @@ impl App {
             ui.add(Label::new(RichText::new(t!("Al aplicar se ejecutan con parámetros y en una transacción: si un cambio falla o no encuentra su fila, no se guarda nada.")).weak()).wrap());
             // El SQL ocupa todo el alto de la ventana (menos la barra de botones) y se ajusta al ancho.
             let h = (ui.available_height() - 40.0).max(60.0);
-            ScrollArea::vertical().id_salt("vista_previa").max_height(h).min_scrolled_height(h).auto_shrink([false, false]).show(ui, |ui| {
-                ui.add(Label::new(highlight_job(&sql, ui.style(), None)).selectable(true).wrap());
+            let pal = Paleta::de(ui);
+            Frame::new().fill(pal.codigo).stroke(Stroke::new(1.0, pal.borde)).corner_radius(6.0).inner_margin(Margin::same(8)).show(ui, |ui| {
+                ScrollArea::vertical().id_salt("vista_previa").max_height(h - 18.0).min_scrolled_height(h - 18.0).auto_shrink([false, false]).show(ui, |ui| {
+                    ui.add(Label::new(highlight_job(&sql, ui.style(), None)).selectable(true).wrap());
+                });
             });
             ui.separator();
             ui.horizontal(|ui| {
-                if ui.add_enabled(can, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar"))).clicked() {
+                if ui.add_enabled(can, IconButton::new(Icon::Check, Tone::Live).label(t!("Aplicar")).primary()).clicked() {
                     apply = true;
                 }
                 if applying {
@@ -3240,7 +3243,7 @@ impl App {
                 });
                 let lines = text.lines().count().max(1);
                 ui.horizontal(|ui| {
-                    let accept = ui.add(IconButton::new(Icon::Check, Tone::Live).label(t!("Aceptar"))).on_hover_text("Ctrl+Enter").clicked() || ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
+                    let accept = ui.add(IconButton::new(Icon::Check, Tone::Live).label(t!("Aceptar")).primary()).on_hover_text("Ctrl+Enter").clicked() || ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
                     if accept {
                         done = Some(Some(Some(text.clone())));
                     }
@@ -3287,15 +3290,23 @@ impl App {
                         continue;
                     }
                     shown += 1;
-                    ui.horizontal(|ui| {
-                        ui.weak(RichText::new(ago(now.saturating_sub(*t))).small());
-                        let r = ui.add(Label::new(RichText::new(short_title(sql)).monospace()).sense(Sense::click())).on_hover_text(sql);
+                    {
+                        // Fila entera pulsable: «hace 5 min» en gris y el SQL.
+                        let mut job = text::LayoutJob::default();
+                        let pal = Paleta::de(ui);
+                        let when = ago(now.saturating_sub(*t));
+                        let small = TextStyle::Small.resolve(ui.style());
+                        // El SQL empieza siempre a la misma distancia (como una columna).
+                        let tw = ui.fonts_mut(|f| f.layout_no_wrap(when.clone(), small.clone(), pal.apagado)).size().x;
+                        job.append(&when, 0.0, TextFormat { font_id: small, color: pal.apagado, valign: Align::Center, ..Default::default() });
+                        job.append(&short_title(sql), (80.0 - tw).max(10.0), TextFormat { font_id: TextStyle::Monospace.resolve(ui.style()), color: pal.texto, valign: Align::Center, ..Default::default() });
+                        let r = crate::estilo::fila_lista(ui, false, job).on_hover_text(sql);
                         if r.double_clicked() {
                             pick = Some((sql.clone(), true));
                         } else if r.clicked() {
                             pick = Some((sql.clone(), false));
                         }
-                    });
+                    }
                 }
                 if shown == 0 {
                     ui.weak(t!("Sin entradas."));
@@ -3559,9 +3570,11 @@ impl App {
         let mut close = false;
         let mut delete = false;
         Window::new(t!("Borrar conexión")).id(win_id(Win::Delete)).collapsible(false).resizable(false).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-            ui.label(tf!("¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.", nombre = name));
+            ui.set_max_width(420.0);
+            crate::estilo::alerta(ui, crate::estilo::Tipo::Aviso, &tf!("¿Borrar «{nombre}» del catálogo? Desaparece también en los otros equipos que lo compartan.", nombre = name));
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
-                if ui.button(t!("Borrar")).clicked() {
+                if ui.add(crate::estilo::boton_peligro(ui, t!("Borrar"))).clicked() {
                     delete = true;
                 }
                 if ui.button(t!("Cancelar")).clicked() {
