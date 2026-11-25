@@ -4005,6 +4005,13 @@ impl App {
                 self.console.editor_h = h;
             }
         }
+        // CONECTOR_COLUMNA=j elige esa columna de la tabla de resultados.
+        if let Some(j) = std::env::var("CONECTOR_COLUMNA").ok().and_then(|v| v.parse::<usize>().ok()) {
+            let idle = self.console.running.is_none();
+            if let Some(t) = self.console.tab().filter(|t| idle && t.sel.is_empty() && j < t.cols.len()) {
+                t.sel.click(false, j, Modifiers::NONE);
+            }
+        }
         if let Some((r, c)) = std::env::var("CONECTOR_CELDA").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?)))) {
             let vista = std::env::var_os("CONECTOR_VISTA").is_some();
             let idle = self.console.running.is_none();
@@ -4276,7 +4283,10 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
         ui.set_min_width(total_w);
         // Cabecera.
         let mods = ui.input(|i| i.modifiers);
-        let sel_bg = ui.visuals().selection.bg_fill.gamma_multiply(0.45);
+        // Selección bien visible: celdas con el tono de selección y cabecera/número rellenos del acento.
+        let sel_bg = ui.visuals().selection.bg_fill.gamma_multiply(if ui.visuals().dark_mode { 0.8 } else { 0.9 });
+        let accent = crate::estilo::acento();
+        let hover_bg = ui.visuals().widgets.hovered.weak_bg_fill;
         let mut copy_menu: Option<bool> = None;
         let menu = |r: &Response, copy_menu: &mut Option<bool>| {
             r.context_menu(|ui| {
@@ -4303,15 +4313,23 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
             menu(&corner.on_hover_text(t!("Seleccionar todo (Ctrl+C copia la selección)")), &mut copy_menu);
             let mut shapes = Vec::new();
             for (j, ((n, t), w)) in c.cols.iter().zip(&c.widths).enumerate() {
+                let selected = c.sel.col(j) || c.sel.all;
                 let head = match &c.edit {
                     Some(e) if e.key.contains(&j) => RichText::new(format!("🔑 {n}")).strong().monospace(),
                     Some(e) if e.base.get(j).is_none_or(|b| b.is_none()) => RichText::new(n).monospace().color(weak),
                     _ => RichText::new(n).strong().monospace().color(head_col),
                 };
-                let r = boxed(ui, *w, row_h, Label::new(head).truncate().selectable(false).sense(Sense::click()));
-                if c.sel.col(j) && !c.sel.all {
-                    shapes.push(Shape::rect_filled(r.rect, 0.0, sel_bg));
+                let head = if selected { head.color(Color32::WHITE).strong() } else { head };
+                // Toda la celda de la cabecera se puede pulsar (no solo el texto).
+                let (rect, r) = ui.allocate_exact_size(vec2(*w, row_h), Sense::click());
+                let r = r.on_hover_cursor(CursorIcon::PointingHand);
+                if selected {
+                    shapes.push(Shape::rect_filled(rect.shrink2(vec2(1.0, 1.0)), 4.0, accent));
+                } else if r.hovered() {
+                    shapes.push(Shape::rect_filled(rect.shrink2(vec2(1.0, 1.0)), 4.0, hover_bg));
                 }
+                let g = WidgetText::from(head).into_galley(ui, Some(TextWrapMode::Truncate), *w - 8.0, TextStyle::Monospace);
+                ui.painter().galley(pos2(rect.left() + 4.0, rect.center().y - g.size().y / 2.0), g, ui.visuals().text_color());
                 if r.clicked() {
                     c.sel.click(false, j, mods);
                 }
@@ -4332,7 +4350,16 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                 let row_sel = c.sel.row(i);
                 let mut cells = Vec::new();
                 let r = ui.horizontal(|ui| {
-                    let n = ui.add_sized([48.0, row_h], Label::new(RichText::new((i + 1).to_string()).color(weak).small()).selectable(false).sense(Sense::click()));
+                    // Número de fila: toda la celda se pulsa; elegida, rellena del acento.
+                    let (nrect, n) = ui.allocate_exact_size(vec2(48.0, row_h), Sense::click());
+                    let n = n.on_hover_cursor(CursorIcon::PointingHand);
+                    if row_sel || c.sel.all {
+                        cells.push(Shape::rect_filled(nrect.shrink2(vec2(2.0, 1.0)), 4.0, accent));
+                    } else if n.hovered() {
+                        cells.push(Shape::rect_filled(nrect.shrink2(vec2(2.0, 1.0)), 4.0, hover_bg));
+                    }
+                    let num_col = if row_sel || c.sel.all { Color32::WHITE } else { weak };
+                    ui.painter().text(nrect.center(), Align2::CENTER_CENTER, (i + 1).to_string(), TextStyle::Small.resolve(ui.style()), num_col);
                     if n.clicked() {
                         c.sel.click(true, i, mods);
                     }
@@ -4366,7 +4393,7 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                             Some(v) => RichText::new(v.replace(['\n', '\r', '\t'], " ")).monospace(),
                             None => RichText::new("NULL").italics().color(weak),
                         };
-                        let r = boxed(ui, *w, row_h, Label::new(text).truncate().selectable(false).sense(Sense::click()));
+                        let r = cell_box(ui, *w, row_h, Label::new(text).truncate().selectable(false));
                         if changed.is_some() {
                             cells.push(Shape::rect_filled(r.rect, 0.0, ORANGE.gamma_multiply(0.35)));
                         } else if !row_sel && c.sel.col(j) {
@@ -4475,6 +4502,17 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
         }
     });
     copied
+}
+
+/// Celda de la tabla: el texto en una caja de ancho fijo y TODA la caja responde al
+/// clic (no solo el texto), para que sea fácil elegir y para resaltarla entera.
+fn cell_box(ui: &mut Ui, w: f32, h: f32, widget: impl Widget) -> Response {
+    let inner = ui.allocate_ui_with_layout(vec2(w, h), Layout::left_to_right(Align::Center), |ui| {
+        ui.set_min_size(vec2(w, h));
+        ui.add_space(4.0);
+        ui.add(widget)
+    });
+    ui.interact(inner.response.rect, inner.response.id.with("celda"), Sense::click())
 }
 
 /// Un widget en una caja de ancho fijo, alineado a la izquierda.
