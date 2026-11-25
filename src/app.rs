@@ -214,6 +214,8 @@ struct EditState {
     changes: std::collections::BTreeMap<(usize, usize), Option<String>>,
     /// Celda en edición: (fila, columna, texto, ¿ya tiene el foco?).
     editing: Option<(usize, usize, String, bool)>,
+    /// Celda en la ventana de edición de varias líneas: (fila, columna, texto).
+    big: Option<(usize, usize, String)>,
     /// Petición «editar» en curso.
     applying: Option<u64>,
     error: Option<ErrInfo>,
@@ -241,6 +243,12 @@ impl EditState {
         rows.dedup();
         rows.len()
     }
+}
+
+/// ¿Tiene sentido editar el valor en una ventana de varias líneas? (textos o valores con saltos de línea)
+fn multiline_worthy(type_name: &str, value: Option<&str>) -> bool {
+    let t = type_name.to_uppercase();
+    value.is_some_and(|v| v.contains('\n') || v.chars().count() > 60) || ["CHAR", "TEXT", "CLOB", "STRING", "JSON", "XML"].iter().any(|k| t.contains(k))
 }
 
 /// Literal SQL para la vista previa (al guardar se usan parámetros).
@@ -390,6 +398,8 @@ struct Console {
     selection: Option<std::ops::Range<usize>>,
     show_history: bool,
     history_filter: String,
+    /// Alto del editor SQL (0 = el de siempre).
+    editor_h: f32,
 }
 
 impl Console {
@@ -1486,6 +1496,7 @@ impl App {
                         key,
                         changes: Default::default(),
                         editing: None,
+                        big: None,
                         applying: None,
                         error: None,
                     });
@@ -2913,7 +2924,26 @@ impl App {
             job.wrap.max_width = wrap;
             ui.fonts_mut(|f| f.layout_job(job))
         };
-        let out = TextEdit::multiline(&mut self.console.sql).id(editor_id).code_editor().desired_rows(5).desired_width(f32::INFINITY).layouter(&mut layouter).show(ui);
+        // Alto del editor: se cambia arrastrando la barra de abajo.
+        let max_h = (ui.available_height() - 120.0).max(80.0);
+        let h = if self.console.editor_h <= 0.0 { 120.0 } else { self.console.editor_h }.clamp(60.0, max_h);
+        let out = ScrollArea::vertical()
+            .id_salt("sql_editor_scroll")
+            .max_height(h)
+            .min_scrolled_height(h)
+            .auto_shrink([false, false])
+            .show(ui, |ui| TextEdit::multiline(&mut self.console.sql).id(editor_id).code_editor().desired_rows(5).desired_width(f32::INFINITY).min_size(vec2(0.0, h)).layouter(&mut layouter).show(ui))
+            .inner;
+        let (grip, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 8.0), Sense::drag());
+        let resp = resp.on_hover_cursor(CursorIcon::ResizeVertical).on_hover_text(t!("Arrastra para cambiar el alto del editor"));
+        let col = if resp.hovered() || resp.dragged() { ui.visuals().widgets.hovered.fg_stroke.color } else { ui.visuals().widgets.noninteractive.bg_stroke.color };
+        let c = grip.center();
+        for dy in [-1.5, 1.5] {
+            ui.painter().line_segment([pos2(c.x - 18.0, c.y + dy), pos2(c.x + 18.0, c.y + dy)], Stroke::new(1.0, col));
+        }
+        if resp.dragged() {
+            self.console.editor_h = (h + resp.drag_delta().y).clamp(60.0, max_h);
+        }
         if let Some(cr) = out.cursor_range {
             let to_byte = |ci: usize| self.console.sql.char_indices().nth(ci).map_or(self.console.sql.len(), |(b, _)| b);
             let (a, b) = (to_byte(cr.primary.index.0), to_byte(cr.secondary.index.0));
@@ -3118,11 +3148,15 @@ impl App {
             .id(win_id(Win::Preview))
             .open(&mut open)
             .collapsible(false)
+            .resizable(true)
+            .min_size([360.0, 160.0])
             .default_size([680.0, 320.0])
             .default_pos(ctx.content_rect().center() - vec2(340.0, 160.0)).show(ctx, |ui| {
-            ui.weak(t!("Al aplicar se ejecutan con parámetros y en una transacción: si un cambio falla o no encuentra su fila, no se guarda nada."));
-            ScrollArea::both().id_salt("vista_previa").max_height(ctx.content_rect().height() * 0.6).auto_shrink([false, true]).show(ui, |ui| {
-                ui.add(Label::new(highlight_job(&sql, ui.style(), None)).selectable(true).extend());
+            ui.add(Label::new(RichText::new(t!("Al aplicar se ejecutan con parámetros y en una transacción: si un cambio falla o no encuentra su fila, no se guarda nada.")).weak()).wrap());
+            // El SQL ocupa todo el alto de la ventana (menos la barra de botones) y se ajusta al ancho.
+            let h = (ui.available_height() - 40.0).max(60.0);
+            ScrollArea::vertical().id_salt("vista_previa").max_height(h).min_scrolled_height(h).auto_shrink([false, false]).show(ui, |ui| {
+                ui.add(Label::new(highlight_job(&sql, ui.style(), None)).selectable(true).wrap());
             });
             ui.separator();
             ui.horizontal(|ui| {
@@ -3142,6 +3176,73 @@ impl App {
         }
         if !open {
             self.show_preview = false;
+        }
+    }
+
+    /// Ventana para editar un valor de varias líneas de la tabla de resultados.
+    fn big_edit_window(&mut self, ctx: &Context) {
+        let Some(t) = self.console.tabs.iter_mut().find(|t| t.edit.as_ref().is_some_and(|e| e.big.is_some())) else { return };
+        let e = t.edit.as_mut().unwrap();
+        let (r, c, _) = e.big.as_ref().unwrap();
+        let (r, c) = (*r, *c);
+        let col = t.cols.get(c).map(|(n, ty)| if ty.is_empty() { n.clone() } else { format!("{n} ({ty})") }).unwrap_or_default();
+        let original = t.rows.get(r).and_then(|row| row.get(c)).and_then(|v| v.as_deref()).map(str::to_owned);
+        let mut open = true;
+        // Some(Some(v)) = guardar v (None = NULL); Some(None) = cancelar.
+        let mut done: Option<Option<Option<String>>> = None;
+        Window::new(tf!("Editar valor · fila {n}", n = r + 1))
+            .id(win_id(Win::BigEdit))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(true)
+            .min_size([320.0, 180.0])
+            .default_size([620.0, 380.0])
+            .default_pos(ctx.content_rect().center() - vec2(310.0, 190.0))
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.strong(&col);
+                    if original.is_none() {
+                        ui.weak(t!("(ahora es NULL)"));
+                    }
+                });
+                let text = &mut e.big.as_mut().unwrap().2;
+                let h = (ui.available_height() - 40.0).max(60.0);
+                let edit_id = Id::unique("editar_valor_texto");
+                ScrollArea::vertical().id_salt("editar_valor").max_height(h).min_scrolled_height(h).auto_shrink([false, false]).show(ui, |ui| {
+                    let r = ui.add(TextEdit::multiline(text).id(edit_id).font(TextStyle::Monospace).desired_width(f32::INFINITY).min_size(vec2(0.0, h)).lock_focus(true));
+                    if ui.memory(|m| m.focused().is_none()) {
+                        r.request_focus();
+                    }
+                });
+                let lines = text.lines().count().max(1);
+                ui.horizontal(|ui| {
+                    let accept = ui.add(IconButton::new(Icon::Check, Tone::Live).label(t!("Aceptar"))).on_hover_text("Ctrl+Enter").clicked() || ui.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::Enter));
+                    if accept {
+                        done = Some(Some(Some(text.clone())));
+                    }
+                    if ui.button(t!("Poner NULL")).clicked() {
+                        done = Some(Some(None));
+                    }
+                    if ui.button(t!("Cancelar")).clicked() {
+                        done = Some(None);
+                    }
+                    ui.weak(tf!("{l} líneas · {c} caracteres", l = lines, c = text.chars().count()));
+                });
+            });
+        if !open {
+            done = Some(None);
+        }
+        match done {
+            Some(Some(v)) => {
+                if v.as_deref() == original.as_deref() {
+                    e.changes.remove(&(r, c));
+                } else {
+                    e.changes.insert((r, c), v);
+                }
+                e.big = None;
+            }
+            Some(None) => e.big = None,
+            None => {}
         }
     }
 
@@ -3649,6 +3750,7 @@ impl App {
             Win::Test => !matches!(self.test, TestState::Idle),
             Win::Form => self.show_form && self.form.is_some(),
             Win::Preview => self.show_preview,
+            Win::BigEdit => self.console.tabs.iter().any(|t| t.edit.as_ref().is_some_and(|e| e.big.is_some())),
             Win::Updater => self.show_updater && !self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Running),
             Win::Keys => self.show_keys,
         }
@@ -3665,6 +3767,13 @@ impl App {
             Win::Keys => self.show_keys = false,
             Win::Form => self.show_form = false,
             Win::Preview => self.show_preview = false,
+            Win::BigEdit => {
+                for t in &mut self.console.tabs {
+                    if let Some(e) = &mut t.edit {
+                        e.big = None;
+                    }
+                }
+            }
             Win::Test => {
                 if let TestState::Running { id, .. } = self.test {
                     self.pending.remove(&id);
@@ -3681,7 +3790,7 @@ impl App {
             return;
         }
         // Orden de prioridad si no se sabe cuál está delante.
-        let open: Vec<Win> = [Win::Delete, Win::Preview, Win::Keys, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings, Win::Form].into_iter().filter(|w| self.is_open(*w)).collect();
+        let open: Vec<Win> = [Win::Delete, Win::BigEdit, Win::Preview, Win::Keys, Win::Updater, Win::Test, Win::Export, Win::Import, Win::History, Win::Settings, Win::Form].into_iter().filter(|w| self.is_open(*w)).collect();
         let Some(first) = open.first().copied() else { return };
         let top = ctx.memory(|m| m.areas().top_layer_id(Order::Middle)).map(|l| l.id);
         let target = if self.confirm_delete { Win::Delete } else { open.iter().copied().find(|w| Some(win_id(*w)) == top).unwrap_or(first) };
@@ -3848,6 +3957,29 @@ impl App {
                 }
             }
         }
+        // CONECTOR_ALTO_EDITOR=px fija el alto del editor SQL; CONECTOR_CELDA=fila,columna abre
+        // la ventana de varias líneas de esa celda (con CONECTOR_VISTA=1, en su lugar, un cambio y la vista previa).
+        if self.debug_frames == 3 {
+            if let Some(h) = std::env::var("CONECTOR_ALTO_EDITOR").ok().and_then(|v| v.parse().ok()) {
+                self.console.editor_h = h;
+            }
+        }
+        if let Some((r, c)) = std::env::var("CONECTOR_CELDA").ok().and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.trim().parse::<usize>().ok()?, b.trim().parse::<usize>().ok()?)))) {
+            let vista = std::env::var_os("CONECTOR_VISTA").is_some();
+            let idle = self.console.running.is_none();
+            if let Some(t) = self.console.tab().filter(|_| idle) {
+                let cur = t.rows.get(r).and_then(|x| x.get(c)).and_then(|v| v.as_deref()).unwrap_or("").to_owned();
+                if let Some(e) = t.edit.as_mut().filter(|e| e.big.is_none() && e.changes.is_empty()) {
+                    CAPTURE_WAIT.store(40, std::sync::atomic::Ordering::Relaxed);
+                    if !vista {
+                        e.big = Some((r, c, format!("{cur}\nsegunda línea\ntercera línea")));
+                    } else {
+                        e.changes.insert((r, c), Some("Un texto bastante largo para comprobar que la vista previa ajusta las líneas al ancho de la ventana en vez de obligar a desplazarse".into()));
+                        self.show_preview = true;
+                    }
+                }
+            }
+        }
         let busy = self.updater.as_ref().is_some_and(|u| u.stage() == crate::update::Stage::Checking)
             || self.export_job.is_some()
             || self.import_job.is_some()
@@ -3855,7 +3987,9 @@ impl App {
             || self.console.running.is_some()
             || self.console.opening.is_some()
             || self.console.queued
-            || self.pending.values().any(|p| matches!(p, Pending::Meta(_)));
+            || self.pending.values().any(|p| matches!(p, Pending::Meta(_) | Pending::Editable(_)))
+            // Ventanas abiertas por la prueba: esperar a que terminen de aparecer.
+            || CAPTURE_WAIT.fetch_update(std::sync::atomic::Ordering::Relaxed, std::sync::atomic::Ordering::Relaxed, |w| w.checked_sub(1)).is_ok();
         if self.debug_frames < 30 || (busy && (self.debug_frames < 900 || (self.debug_frames >= 10_000 && self.debug_frames < 30_000))) {
             ctx.request_repaint();
             return;
@@ -3878,6 +4012,9 @@ impl App {
         })));
     }
 }
+
+/// Fotogramas que el modo captura espera antes de la foto (ventanas que aparecen).
+static CAPTURE_WAIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// «hace 5 min» a partir de segundos.
 fn ago(secs: u64) -> String {
@@ -3962,6 +4099,7 @@ enum Win {
     Form,
     Preview,
     Keys,
+    BigEdit,
 }
 
 fn win_id(w: Win) -> Id {
@@ -4042,6 +4180,10 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
     let mut copied = None;
     let stripe = ui.visuals().faint_bg_color;
     let weak = ui.visuals().weak_text_color();
+    // Fondo propio: algo más claro (tema claro) u oscuro (tema oscuro) que el panel.
+    let v = ui.visuals();
+    let res_bg = v.panel_fill.lerp_to_gamma(v.extreme_bg_color, 0.6);
+    ui.painter().rect_filled(ui.available_rect_before_wrap(), 4.0, res_bg);
     ScrollArea::horizontal().id_salt("res_h").auto_shrink(false).show(ui, |ui| {
         ui.set_min_width(total_w);
         // Cabecera.
@@ -4143,18 +4285,28 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                             let current = cell.unwrap_or("").to_owned();
                             if let Some(e) = &mut c.edit {
                                 e.commit_editing(&c.rows);
-                                e.editing = Some((i, j, current, false));
+                                // Con saltos de línea, el cuadro de una línea los perdería: ventana.
+                                if current.contains('\n') {
+                                    e.big = Some((i, j, current));
+                                } else {
+                                    e.editing = Some((i, j, current, false));
+                                }
                             }
                         } else if r.clicked() {
                             ui.ctx().copy_text(cell.unwrap_or("").to_owned());
                             copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
                         }
                         if editable {
-                            // 0 = editar, 1 = NULL, 2 = deshacer, 3 = copiar
+                            // 0 = editar, 1 = NULL, 2 = deshacer, 3 = copiar, 4 = editar en ventana
                             let mut act: Option<u8> = None;
+                            let worthy = multiline_worthy(&c.cols[j].1, cell);
                             r.context_menu(|ui| {
                                 if ui.button(t!("Editar")).clicked() {
                                     act = Some(0);
+                                    ui.close();
+                                }
+                                if worthy && ui.button(t!("Editar en ventana (varias líneas)…")).clicked() {
+                                    act = Some(4);
                                     ui.close();
                                 }
                                 if ui.button(t!("Copiar valor")).clicked() {
@@ -4186,7 +4338,12 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
                                 copied = Some(tf!("Copiado: fila {n}, {columna}", n = i + 1, columna = c.cols[j].0));
                             } else if let (Some(a), Some(e)) = (act, &mut c.edit) {
                                 match a {
+                                    0 if cell.is_some_and(|v| v.contains('\n')) => e.big = Some((i, j, cell.unwrap_or("").to_owned())),
                                     0 => e.editing = Some((i, j, cell.unwrap_or("").to_owned(), false)),
+                                    4 => {
+                                        e.commit_editing(&c.rows);
+                                        e.big = Some((i, j, cell.unwrap_or("").to_owned()));
+                                    }
                                     1 if row.get(j).is_some_and(|v| v.is_none()) => {
                                         e.changes.remove(&(i, j));
                                     }
@@ -4336,6 +4493,7 @@ impl eframe::App for App {
         if self.show_preview {
             self.preview_window(&ctx);
         }
+        self.big_edit_window(&ctx);
         self.auto_apply_settings(&ctx);
         if self.confirm_delete {
             self.delete_window(&ctx);
@@ -4412,6 +4570,7 @@ mod tests {
             key: vec![0],
             changes,
             editing: None,
+            big: None,
             applying: None,
             error: None,
         };

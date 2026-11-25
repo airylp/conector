@@ -403,3 +403,9 @@ Aplicar	Apply	Appliquer
 Descargar driver de {nombre}	Download {nombre} driver	Télécharger le pilote {nombre}
 Editar	Edit	Modifier
 Cerrar esta pestaña	Close this tab	Fermer cet onglet
+(ahora es NULL)	(currently NULL)	(actuellement NULL)
+Aceptar	OK	OK
+Arrastra para cambiar el alto del editor	Drag to change the editor height	Faites glisser pour changer la hauteur de l'éditeur
+Editar en ventana (varias líneas)…	Edit in a window (multiple lines)…	Modifier dans une fenêtre (plusieurs lignes)…
+Editar valor · fila {n}	Edit value · row {n}	Modifier la valeur · ligne {n}
+{l} líneas · {c} caracteres	{l} lines · {c} characters	{l} lignes · {c} caractères
