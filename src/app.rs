@@ -635,13 +635,7 @@ fn apply_lang(s: &Settings) {
 }
 
 fn apply_theme(ctx: &Context, s: &Settings) {
-    let graphite = s.graphite && s.dark == Some(false);
-    crate::estilo::grafito(ctx, graphite);
-    ctx.set_theme(match s.dark {
-        Some(true) => ThemePreference::Dark,
-        Some(false) => ThemePreference::Light,
-        None => ThemePreference::System,
-    });
+    crate::estilo::aplicar_tema(ctx, s.theme);
 }
 
 impl App {
@@ -2871,7 +2865,7 @@ impl App {
         ui.set_min_height(ui.available_height());
         let p = crate::estilo::Paleta::de(ui);
         Panel::left("explorador_panel").resizable(true).default_size(220.0).min_size(120.0).frame(Frame::side_top_panel(ui.style()).fill(p.fondo)).show(ui, |ui| self.explorer_ui(ui));
-        CentralPanel::default().frame(Frame::central_panel(ui.style()).fill(p.central)).show(ui, |ui| self.sql_ui(ui));
+        CentralPanel::default().frame(crate::estilo::marco_central(ui.style())).show(ui, |ui| self.sql_ui(ui));
     }
 
     fn sql_ui(&mut self, ui: &mut Ui) {
@@ -3357,12 +3351,9 @@ impl App {
                         }
                     });
                     fila(ui, t!("Tema"), None, |ui| {
-                        let mut v = (s.dark, s.graphite && s.dark == Some(false));
-                        ui.radio_value(&mut v, (None, false), t!("Sistema"));
-                        ui.radio_value(&mut v, (Some(false), false), t!("Claro"));
-                        ui.radio_value(&mut v, (Some(false), true), t!("Grafito claro")).on_hover_text(t!("Claro con paneles grises y separaciones marcadas"));
-                        ui.radio_value(&mut v, (Some(true), false), t!("Oscuro"));
-                        (s.dark, s.graphite) = v;
+                        for t in crate::estilo::Tema::TODOS {
+                            ui.radio_value(&mut s.theme, t, t.nombre());
+                        }
                     });
                     if crate::update::SUPPORTED {
                         fila(ui, t!("Actualizaciones"), None, |ui| {
@@ -3546,7 +3537,7 @@ impl App {
                 // Solo lo de presentación: catálogo, Java y servicio se conservan.
                 let d = store::Settings { max_rows: 1000, check_updates: true, ..Default::default() };
                 let s = &mut self.settings_edit;
-                (s.dark, s.graphite, s.lang, s.max_rows, s.check_updates) = (d.dark, d.graphite, d.lang, d.max_rows, d.check_updates);
+                (s.theme, s.lang, s.max_rows, s.check_updates) = (d.theme, d.lang, d.max_rows, d.check_updates);
             }
             crate::estilo::Accion::Nada => {}
         }
@@ -4570,7 +4561,7 @@ impl eframe::App for App {
                 self.menu_cmds.push(c);
             }
         }
-        crate::estilo::portapapeles_mac(ctx, raw);
+        crate::estilo::ctrl_mac(ctx, raw);
         let Ok(keys) = std::env::var("CONECTOR_TECLAS") else { return };
         for k in keys.split(',') {
             if let Some((f, "esc")) = k.split_once(':') {
@@ -4642,8 +4633,7 @@ impl eframe::App for App {
             Panel::left("lista").resizable(true).default_size(230.0).min_size(150.0).show(ui, |ui| self.sidebar(ui));
         }
         // Explorador y consola ocupan la ventana; los datos de la conexión van en una ventana aparte.
-        let central = crate::estilo::Paleta::de(ui).central;
-        CentralPanel::default().frame(Frame::central_panel(ui.style()).fill(central)).show(ui, |ui| {
+        CentralPanel::default().frame(crate::estilo::marco_central(ui.style())).show(ui, |ui| {
             if self.entries.is_empty() {
                 self.welcome(ui);
             } else {
@@ -4713,18 +4703,32 @@ mod tests {
     use super::*;
 
     #[test]
-    fn ctrl_c_x_v_en_mac() {
-        use crate::estilo::ctrl_portapapeles;
+    fn ctrl_hace_de_cmd_en_mac() {
+        use crate::estilo::ctrl_como_cmd;
         use eframe::egui::Event;
         let k = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
-        let (e, pegar) = ctrl_portapapeles(&[k(Key::C, Modifiers::CTRL)], true);
-        assert!(matches!(e.as_slice(), [Event::Copy]) && !pegar);
-        let (e, _) = ctrl_portapapeles(&[k(Key::X, Modifiers::CTRL)], true);
-        assert!(matches!(e.as_slice(), [Event::Cut]));
-        assert!(ctrl_portapapeles(&[k(Key::V, Modifiers::CTRL)], true).1);
-        // Cmd+C ya lo convierte egui; en Linux/Windows Ctrl+C también: no se duplica.
-        assert!(ctrl_portapapeles(&[k(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND)], true).0.is_empty());
-        assert!(ctrl_portapapeles(&[k(Key::C, Modifiers::CTRL)], false).0.is_empty());
+        let run = |evs: Vec<Event>, mac| {
+            let mut evs = [vec![Event::ModifiersChanged(Modifiers::CTRL)], evs].concat();
+            let pegar = ctrl_como_cmd(&mut evs, mac);
+            let Event::ModifiersChanged(m) = evs.remove(0) else { unreachable!() };
+            (evs, m, pegar)
+        };
+        // Ctrl+B en macOS = Cmd+B: lo atrapa consume_key(COMMAND, B).
+        let (mut evs, m, _) = run(vec![k(Key::B, Modifiers::CTRL)], true);
+        assert!(m.mac_cmd && m.command && !m.ctrl);
+        let mut i = eframe::egui::InputState::default();
+        i.events = std::mem::take(&mut evs);
+        assert!(i.consume_key(Modifiers::COMMAND, Key::B));
+        // Ctrl+C/X/V: además copiar, cortar y pegar.
+        let (evs, _, _) = run(vec![k(Key::C, Modifiers::CTRL)], true);
+        assert!(matches!(evs.as_slice(), [_, Event::Copy]));
+        let (evs, _, _) = run(vec![k(Key::X, Modifiers::CTRL)], true);
+        assert!(matches!(evs.as_slice(), [_, Event::Cut]));
+        assert!(run(vec![k(Key::V, Modifiers::CTRL)], true).2);
+        // Cmd+C ya lo convierte egui; fuera de macOS no se toca nada.
+        assert_eq!(run(vec![k(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND)], true).0.len(), 1);
+        let (evs, m, _) = run(vec![k(Key::C, Modifiers::CTRL)], false);
+        assert!(evs.len() == 1 && m.ctrl);
     }
 
     #[test]

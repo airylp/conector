@@ -495,9 +495,7 @@ pub struct Settings {
     pub max_rows: u32,
     /// Opciones de la JVM; vacío = `-Xmx384m`.
     pub jvm: String,
-    pub dark: Option<bool>,
-    /// Tema «Grafito claro» (claro con paneles grises; implica `dark = Some(false)`).
-    pub graphite: bool,
+    pub theme: crate::estilo::Tema,
     /// Servicio de red para otros programas (ver `server`).
     pub serve: bool,
     /// Dirección:puerto donde escucha.
@@ -538,10 +536,7 @@ impl Settings {
                 "java" => s.java = v,
                 "jvm" => s.jvm = v,
                 "filas" => s.max_rows = v.parse().unwrap_or(1000),
-                "tema" => {
-                    s.dark = Some(v == "oscuro");
-                    s.graphite = v == "grafito";
-                }
+                "tema" => s.theme = crate::estilo::Tema::de_clave(&v),
                 "servir" => s.serve = v == "si",
                 "servir_en" if !v.is_empty() => s.serve_addr = v,
                 "servir_token" => s.serve_token = v,
@@ -578,8 +573,8 @@ impl Settings {
             self.serve_cert,
             self.serve_key
         );
-        if let Some(d) = self.dark {
-            t.push_str(if d { "tema=oscuro\n" } else if self.graphite { "tema=grafito\n" } else { "tema=claro\n" });
+        if let Some(k) = self.theme.clave() {
+            t.push_str(&format!("tema={k}\n"));
         }
         if let Some(l) = &self.lang {
             t.push_str(&format!("idioma={l}\n"));
