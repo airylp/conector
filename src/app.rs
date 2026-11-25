@@ -576,6 +576,9 @@ pub struct App {
     /// Menú de la barra de macOS.
     #[cfg(target_os = "macos")]
     menu: crate::macmenu::MacMenu,
+    /// Opciones del menú recogidas en `raw_input_hook` que atiende `mac_menu`.
+    #[cfg(target_os = "macos")]
+    menu_cmds: Vec<crate::macmenu::Cmd>,
     /// Paneles visibles: lista de conexiones y datos de la conexión.
     pub show_sidebar: bool,
     pub show_form: bool,
@@ -673,6 +676,8 @@ impl App {
             about_icon: None,
             #[cfg(target_os = "macos")]
             menu: crate::macmenu::MacMenu::new(&cc.egui_ctx),
+            #[cfg(target_os = "macos")]
+            menu_cmds: Vec::new(),
             show_sidebar: true,
             show_form: true,
             java: None,
@@ -3708,14 +3713,14 @@ impl App {
     /// Opciones elegidas en el menú de macOS y marcas de «Ver».
     #[cfg(target_os = "macos")]
     fn mac_menu(&mut self, ctx: &Context) {
-        use crate::macmenu::{Cmd, inject};
-        for c in self.menu.poll() {
+        use crate::macmenu::Cmd;
+        for c in std::mem::take(&mut self.menu_cmds) {
             match c {
                 Cmd::About => self.show_about = true,
                 Cmd::Update => self.open_updater(ctx),
                 Cmd::Settings => self.open_settings(),
                 Cmd::Url(u) => open_url(u),
-                c => inject(ctx, c),
+                _ => {}
             }
         }
         self.menu.sync([self.show_sidebar, self.show_form && self.form.is_some()]);
@@ -4513,7 +4518,10 @@ fn results_table(ui: &mut Ui, c: &mut ResultTab, running: bool) -> Option<String
             }
         });
         // Ctrl+C (egui lo convierte en «Copy») copia la selección si no se está editando texto.
-        let ctrl_c = ui.input(|i| i.events.iter().any(|e| matches!(e, eframe::egui::Event::Copy))) && ui.memory(|m| m.focused().is_none());
+        // Ni con una caja de texto con foco ni con texto elegido en una etiqueta (DDL, mensajes,
+        // errores, vista previa…): ese Ctrl+C es suyo y no debe pisarlo la tabla.
+        let label_sel = ui.ctx().plugin::<eframe::egui::text_selection::LabelSelectionState>().lock().has_selection();
+        let ctrl_c = ui.input(|i| i.events.iter().any(|e| matches!(e, eframe::egui::Event::Copy))) && ui.memory(|m| m.focused().is_none()) && !label_sel;
         let headers = copy_menu.or(if ctrl_c { Some(true) } else { None });
         if let Some((text, msg)) = headers.and_then(|h| selection_tsv(c, h)) {
             ui.ctx().copy_text(text);
@@ -4553,7 +4561,16 @@ impl eframe::App for App {
     }
 
     /// Pruebas: CONECTOR_TECLAS='40:esc,60:esc' pulsa Escape en esos fotogramas.
-    fn raw_input_hook(&mut self, _ctx: &Context, raw: &mut RawInput) {
+    fn raw_input_hook(&mut self, ctx: &Context, raw: &mut RawInput) {
+        // Menú de macOS (se queda con Cmd+C, Cmd+V…) y Ctrl+C/X/V en macOS: antes del
+        // fotograma, para que lleguen a todas las cajas de texto y etiquetas.
+        #[cfg(target_os = "macos")]
+        for c in self.menu.poll() {
+            if let Some(c) = crate::macmenu::inject(ctx, raw, c) {
+                self.menu_cmds.push(c);
+            }
+        }
+        crate::estilo::portapapeles_mac(ctx, raw);
         let Ok(keys) = std::env::var("CONECTOR_TECLAS") else { return };
         for k in keys.split(',') {
             if let Some((f, "esc")) = k.split_once(':') {
@@ -4694,6 +4711,21 @@ impl eframe::App for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ctrl_c_x_v_en_mac() {
+        use crate::estilo::ctrl_portapapeles;
+        use eframe::egui::Event;
+        let k = |key, modifiers| Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers };
+        let (e, pegar) = ctrl_portapapeles(&[k(Key::C, Modifiers::CTRL)], true);
+        assert!(matches!(e.as_slice(), [Event::Copy]) && !pegar);
+        let (e, _) = ctrl_portapapeles(&[k(Key::X, Modifiers::CTRL)], true);
+        assert!(matches!(e.as_slice(), [Event::Cut]));
+        assert!(ctrl_portapapeles(&[k(Key::V, Modifiers::CTRL)], true).1);
+        // Cmd+C ya lo convierte egui; en Linux/Windows Ctrl+C también: no se duplica.
+        assert!(ctrl_portapapeles(&[k(Key::C, Modifiers::MAC_CMD | Modifiers::COMMAND)], true).0.is_empty());
+        assert!(ctrl_portapapeles(&[k(Key::C, Modifiers::CTRL)], false).0.is_empty());
+    }
 
     #[test]
     fn vista_previa_de_cambios() {
