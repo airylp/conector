@@ -2954,7 +2954,7 @@ impl App {
                         if ui.selectable_label(self.console.active == Some(i), &t.title).on_hover_text(&t.info).clicked() {
                             self.console.active = Some(i);
                         }
-                        if ui.small_button("✕").clicked() {
+                        if ui.small_button("×").on_hover_text(t!("Cerrar esta pestaña")).clicked() {
                             close = Some(i);
                         }
                         ui.add_space(4.0);
