@@ -3350,10 +3350,8 @@ impl App {
                             ui.radio_value(&mut s.lang, Some(l.code().to_owned()), l.name());
                         }
                     });
-                    fila(ui, t!("Tema"), None, |ui| {
-                        for t in crate::estilo::Tema::TODOS {
-                            ui.radio_value(&mut s.theme, t, t.nombre());
-                        }
+                    crate::estilo::fila_bloque(ui, t!("Tema"), Some(t!("Grafito: paneles en otro gris y separaciones marcadas")), |ui| {
+                        crate::estilo::opciones_tema(ui, &mut s.theme);
                     });
                     if crate::update::SUPPORTED {
                         fila(ui, t!("Actualizaciones"), None, |ui| {
