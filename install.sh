@@ -8,14 +8,19 @@
 #   Pregunta qué hacer: si ya está instalado ofrece actualizar o desinstalar; si
 #   no, instalarlo. También se puede indicar directamente (sin preguntas):
 #     … | sh -s -- instalar        (instalar o actualizar)
+#     … | sh -s -- compilar        (compilar en este equipo lo último de main)
 #     … | sh -s -- desinstalar     (pregunta si borrar también la configuración)
 #
-#   macOS: crea conector.app (con ícono) en /Applications (o ~/Applications sin permiso).
-#   Linux: instala ~/.local/bin/conector con ícono y entrada en el menú de aplicaciones.
+#   Por defecto descarga la última versión publicada en GitHub Releases (segundos,
+#   sin Rust). Si no hay versión para este equipo (p. ej. Linux ARM) o se pide
+#   «compilar», descarga el código y lo compila (instala Rust con rustup si falta).
+#   macOS: conector.app en /Applications (o ~/Applications sin permiso).
+#   Linux: ~/.local/bin/conector con ícono y entrada en el menú de aplicaciones.
 #
-# Variables opcionales: CONECTOR_REPO (usuario/repo), CONECTOR_REF (rama o tag),
-#   CONECTOR_DESTINO (carpeta de instalación), CONECTOR_SOLO_BINARIO=1 (solo el
-#   ejecutable en la carpeta actual, sin instalar nada).
+# Variables opcionales: CONECTOR_REPO (usuario/repo), CONECTOR_VERSION (tag, p. ej.
+#   v0.2.0; por defecto la más reciente), CONECTOR_REF (rama o tag a compilar; main),
+#   CONECTOR_DESTINO (carpeta de instalación, para pruebas), CONECTOR_IDIOMA (es|en|fr),
+#   CONECTOR_SOLO_BINARIO=1 (con «compilar»: solo el ejecutable en la carpeta actual).
 set -eu
 
 REPO="${CONECTOR_REPO:-airylp/conector}"
@@ -28,12 +33,14 @@ fail() { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # Mensajes en el idioma elegido: m "español" "english" "français".
 m() { case "${IDIOMA:-es}" in en) printf '%s' "$2" ;; fr) printf '%s' "$3" ;; *) printf '%s' "$1" ;; esac; }
 
-# Preguntas: se leen de la terminal (el script llega por la tubería de curl).
+hay_terminal() { (: < /dev/tty) 2>/dev/null; }
+leer() { # leer "pregunta" → respuesta en $r (de la terminal: el script llega por la tubería de curl)
+    printf '%s' "$1" > /dev/tty
+    read -r r < /dev/tty || r=""
+}
 pregunta() {
-    # ¿Hay terminal de verdad? (abrir /dev/tty falla si se ejecuta sin ella).
-    if (: < /dev/tty) 2>/dev/null; then
-        printf '%s %s ' "$1" "$(m '[s/N]' '[y/N]' '[o/N]')" > /dev/tty
-        read -r r < /dev/tty || r=""
+    if hay_terminal; then
+        leer "$1 $(m '[s/N]' '[y/N]' '[o/N]') "
         case "$r" in s|S|si|sí|Sí|y|Y|yes|o|O|oui) return 0 ;; esac
     fi
     return 1
@@ -44,26 +51,35 @@ if [ "$OS" = "Darwin" ]; then
     APP_DIRS="${CONECTOR_DESTINO:-/Applications $HOME/Applications}"
     CONFIG="$HOME/Library/Application Support/conector"
     CACHE="$HOME/Library/Caches/conector-compilacion"
-else
+    PLATAFORMA="macos-universal"
+    EXT="zip"
+elif [ "$OS" = "Linux" ]; then
     BIN_DIR="${CONECTOR_DESTINO:-$HOME/.local/bin}"
     DATA="${XDG_DATA_HOME:-$HOME/.local/share}"
-    ICON_SIZES="16 32 64 128 256 512"
     CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/conector"
     CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/conector-compilacion"
+    # Solo se publica para x86_64; en otras arquitecturas se compila.
+    case "$(uname -m)" in
+        x86_64 | amd64) PLATAFORMA="linux-x86_64" ;;
+        *) PLATAFORMA="" ;;
+    esac
+    EXT="tar.gz"
+else
+    fail "$(m 'En Windows usa install.ps1 (PowerShell: irm https://raw.githubusercontent.com/airylp/conector/main/install.ps1 | iex) o el instalador de https://github.com/airylp/conector/releases' 'On Windows use install.ps1 (PowerShell: irm https://raw.githubusercontent.com/airylp/conector/main/install.ps1 | iex) or the installer from https://github.com/airylp/conector/releases' "Sous Windows, utilisez install.ps1 (PowerShell : irm https://raw.githubusercontent.com/airylp/conector/main/install.ps1 | iex) ou l'installateur de https://github.com/airylp/conector/releases")"
 fi
-
-hay_terminal() { (: < /dev/tty) 2>/dev/null; }
-leer() { # leer "pregunta" → respuesta en $r
-    printf '%s' "$1" > /dev/tty
-    read -r r < /dev/tty || r=""
-}
+MARCA="$CONFIG/version-instalada"
+LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+BUNDLE_ID="io.github.airylp.conector"
+# Tamaños del ícono en el tema hicolor (Linux).
+ICON_SIZES="16 32 64 128 256 512"
 
 # ------------------------------------------------------------ idioma
-# CONECTOR_IDIOMA=es|en|fr, o el ya guardado en los ajustes de la app; si no
-# hay ninguno y hay terminal, se pregunta (y se guarda para la app).
+# CONECTOR_IDIOMA, el ya guardado en los ajustes de la app o, si hay terminal y no
+# se indicó acción, se pregunta (y se guarda para la app).
+AJUSTES="$CONFIG/ajustes.txt"
 IDIOMA="${CONECTOR_IDIOMA:-}"
 GUARDAR_IDIOMA="$IDIOMA"
-[ -n "$IDIOMA" ] || IDIOMA="$(sed -n 's/^idioma=//p' "$CONFIG/ajustes.txt" 2>/dev/null | head -n 1)"
+[ -n "$IDIOMA" ] || IDIOMA="$(sed -n 's/^idioma=//p' "$AJUSTES" 2>/dev/null | head -n 1)"
 if [ -z "$IDIOMA" ]; then
     case "${LC_ALL:-${LANG:-}}" in en*) IDIOMA=en ;; fr*) IDIOMA=fr ;; *) IDIOMA=es ;; esac
     if [ -z "$ACCION" ] && hay_terminal; then
@@ -76,174 +92,273 @@ if [ -z "$IDIOMA" ]; then
 fi
 case "$IDIOMA" in es|en|fr) ;; *) IDIOMA=es ;; esac
 export IDIOMA
+
 # Deja el idioma en los ajustes de la app (sin tocar lo demás).
 guardar_idioma() {
     [ -n "$GUARDAR_IDIOMA" ] || return 0
     mkdir -p "$CONFIG"
-    f="$CONFIG/ajustes.txt"
-    if [ -f "$f" ]; then grep -v '^idioma=' "$f" > "$f.tmp" || true; mv "$f.tmp" "$f"; fi
-    echo "idioma=$IDIOMA" >> "$f"
+    if [ -f "$AJUSTES" ]; then grep -v '^idioma=' "$AJUSTES" > "$AJUSTES.tmp" || true; mv "$AJUSTES.tmp" "$AJUSTES"; fi
+    echo "idioma=$GUARDAR_IDIOMA" >> "$AJUSTES"
 }
 
-# ------------------------------------------------------------ ¿qué hacer?
-# Sin acción indicada y con terminal, se pregunta. (La actualización desde la
-# app indica «instalar» y no pregunta nada.)
-if [ -z "$ACCION" ]; then
-    ACCION=instalar
-    if hay_terminal; then
-        instalada=""
-        if [ "$OS" = "Darwin" ]; then
-            for d in $APP_DIRS; do
-                [ -d "$d/conector.app" ] && { instalada="$d/conector.app"; break; }
-            done
-            [ -n "$instalada" ] && version=$(defaults read "$instalada/Contents/Info" CFBundleVersion 2>/dev/null || echo "?")
-        elif [ -x "$BIN_DIR/conector" ]; then
-            instalada="$BIN_DIR/conector"
-            version="?"
-        fi
-        if [ -n "$instalada" ]; then
-            {
-                echo "$(m "conector ya está instalado: $instalada (versión $version)" "conector is already installed: $instalada (version $version)" "conector est déjà installé : $instalada (version $version)")"
-                echo "  1) $(m 'Actualizar a la última versión' 'Update to the latest version' 'Mettre à jour vers la dernière version')"
-                echo "  2) $(m 'Desinstalar' 'Uninstall' 'Désinstaller')"
-                echo "  3) $(m 'Cancelar' 'Cancel' 'Annuler')"
-            } > /dev/tty
-            leer "$(m 'Elige [1-3] (Enter = 1): ' 'Choose [1-3] (Enter = 1): ' 'Choisissez [1-3] (Entrée = 1) : ')"
-            case "${r:-1}" in
-                1) ACCION=instalar ;;
-                2) ACCION=desinstalar ;;
-                *) m "Cancelado." "Cancelled." "Annulé."; echo; exit 0 ;;
-            esac
-        else
-            destino="/Applications"
-            [ "$OS" = "Darwin" ] || destino="$BIN_DIR"
-            leer "$(m "Se va a instalar conector en ${CONECTOR_DESTINO:-$destino}. ¿Continuar? [S/n] " "conector will be installed in ${CONECTOR_DESTINO:-$destino}. Continue? [Y/n] " "conector va être installé dans ${CONECTOR_DESTINO:-$destino}. Continuer ? [O/n] ")"
-            case "$r" in n|N|no|No|non|Non) m "Cancelado." "Cancelled." "Annulé."; echo; exit 0 ;; esac
-        fi
+# ------------------------------------------------------------ estado
+instalado() {
+    if [ "$OS" = "Darwin" ]; then
+        for d in $APP_DIRS; do [ -d "$d/conector.app" ] && { echo "$d/conector.app"; return 0; }; done
+        return 1
     fi
-fi
+    [ -x "$BIN_DIR/conector" ] && echo "$BIN_DIR/conector"
+}
+
+# Tag de la versión a instalar: la pedida o la más reciente.
+version_remota() {
+    if [ -n "${CONECTOR_VERSION:-}" ]; then echo "$CONECTOR_VERSION"; return; fi
+    curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -n 1
+}
 
 # ------------------------------------------------------------ desinstalar
-if [ "$ACCION" = "desinstalar" ] || [ "$ACCION" = "--desinstalar" ]; then
-    if [ "$OS" = "Darwin" ]; then
-        for d in $APP_DIRS; do
-            if [ -d "$d/conector.app" ]; then
-                [ -n "${CONECTOR_DESTINO:-}" ] || osascript -e 'tell application id "io.github.airylp.conector" to quit' >/dev/null 2>&1 || true
-                /System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u "$d/conector.app" >/dev/null 2>&1 || true
-                rm -rf "${d:?}/conector.app" && info "$(m "Quitada $d/conector.app" "Removed $d/conector.app" "Supprimée : $d/conector.app")"
-            fi
-        done
+desinstalar() {
+    ruta="$(instalado || true)"
+    if [ -z "$ruta" ]; then
+        info "$(m 'conector no está instalado.' 'conector is not installed.' "conector n'est pas installé.")"
     else
-        for f in "$BIN_DIR/conector" "$DATA/applications/conector.desktop"; do
-            if [ -e "$f" ]; then rm -f "$f" && info "$(m "Quitado $f" "Removed $f" "Supprimé : $f")"; fi
-        done
-        for t in $ICON_SIZES; do rm -f "$DATA/icons/hicolor/${t}x${t}/apps/conector.png"; done
-        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
+        if [ "$OS" = "Darwin" ]; then
+            [ -n "${CONECTOR_DESTINO:-}" ] || osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+            "$LSREGISTER" -u "$ruta" >/dev/null 2>&1 || true
+            rm -rf "$ruta"
+        else
+            rm -f "$BIN_DIR/conector" "$DATA/applications/conector.desktop"
+            for t in $ICON_SIZES; do rm -f "$DATA/icons/hicolor/${t}x${t}/apps/conector.png"; done
+            [ -d "$DATA/icons/hicolor" ] && touch "$DATA/icons/hicolor"
+            command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
+        fi
+        rm -f "$MARCA"
+        info "$(m "Desinstalado: $ruta" "Uninstalled: $ruta" "Désinstallé : $ruta")"
     fi
     rm -rf "$CACHE"
     if [ -d "$CONFIG" ]; then
         echo "$(m 'Configuración' 'Settings' 'Réglages'): $CONFIG"
         ls -1 "$CONFIG" | sed 's/^/    /'
         if pregunta "$(m '¿Borrar también la configuración (ajustes, contraseñas recordadas, Java portátil)? El catálogo compartido no se toca.' 'Also delete the settings (settings, remembered passwords, portable Java)? The shared catalog is not touched.' 'Supprimer aussi la configuration (réglages, mots de passe retenus, Java portable) ? Le catalogue partagé n’est pas touché.')"; then
-            rm -rf "$CONFIG" && info "$(m 'Configuración borrada' 'Settings deleted' 'Réglages supprimés')"
+            rm -rf "$CONFIG"
+            info "$(m 'Configuración borrada.' 'Settings deleted.' 'Configuration supprimée.')"
         else
-            m "Configuración conservada." "Settings kept." "Réglages conservés."; echo
+            info "$(m 'Configuración conservada.' 'Settings kept.' 'Réglages conservés.')"
         fi
     fi
-    info "$(m 'conector desinstalado' 'conector uninstalled' 'conector désinstallé')"
-    exit 0
-fi
-[ "$ACCION" = "instalar" ] || [ "$ACCION" = "actualizar" ] || fail "$(m "acción desconocida: $ACCION (usa instalar o desinstalar)" "unknown action: $ACCION (use instalar or desinstalar)" "action inconnue : $ACCION (utilisez instalar ou desinstalar)")"
+}
 
-# ------------------------------------------------------------ requisitos
-command -v curl >/dev/null 2>&1 || fail "$(m 'se necesita curl' 'curl is required' 'curl est nécessaire')"
-command -v tar  >/dev/null 2>&1 || fail "$(m 'se necesita tar' 'tar is required' 'tar est nécessaire')"
-command -v cc   >/dev/null 2>&1 || fail "$(m 'se necesita un compilador/enlazador C (cc).' 'a C compiler/linker (cc) is required.' 'un compilateur/éditeur de liens C (cc) est nécessaire.')
-  Debian/Ubuntu: sudo apt install build-essential
-  Fedora:        sudo dnf install gcc
-  Arch:          sudo pacman -S base-devel
-  macOS:         xcode-select --install"
+# ------------------------------------------------------------ colocar
+# Pone en su sitio (macOS) una conector.app ya armada.
+colocar_app() {
+    src="$1"
+    destino=""
+    for d in $APP_DIRS; do
+        mkdir -p "$d" 2>/dev/null || true
+        if [ -w "$d" ]; then destino="$d"; break; fi
+    done
+    [ -n "$destino" ] || fail "$(m "No hay permiso para escribir en: $APP_DIRS" "No permission to write to: $APP_DIRS" "Pas de permission d'écriture dans : $APP_DIRS")"
+    reabrir=0
+    # CONECTOR_NO_CERRAR (lo pone el actualizador de la app): no se cierra la app
+    # abierta; la versión nueva se abre al pulsar «Reiniciar ahora». Si no, se le
+    # pide que se cierre como si lo hiciera el usuario (pregunta si hay cambios).
+    if [ -z "${CONECTOR_NO_CERRAR:-}" ] && [ -z "${CONECTOR_DESTINO:-}" ] && pgrep -f "conector.app/Contents/MacOS/conector" >/dev/null 2>&1; then
+        osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
+        i=0
+        while pgrep -f "conector.app/Contents/MacOS/conector" >/dev/null 2>&1 && [ $i -lt 60 ]; do sleep 1; i=$((i + 1)); done
+        if pgrep -f "conector.app/Contents/MacOS/conector" >/dev/null 2>&1; then
+            info "$(m 'conector sigue abierto: se instala igual; reinícialo después.' 'conector is still open: installing anyway; restart it afterwards.' 'conector est toujours ouvert : installation quand même ; relancez-le ensuite.')"
+        else
+            reabrir=1
+        fi
+    fi
+    ruta="$destino/conector.app"
+    if [ -d "$ruta" ] && command -v rsync >/dev/null 2>&1; then
+        # Reemplazar el contenido sin borrar la carpeta: para macOS (Dock,
+        # Launchpad) sigue siendo la misma app.
+        rsync -a --delete "$src/" "$ruta/"
+    else
+        rm -rf "$ruta"
+        mv "$src" "$ruta"
+    fi
+    "$LSREGISTER" -f "$ruta" >/dev/null 2>&1 || true
+    if [ "$reabrir" = 1 ]; then open "$ruta" || true; fi
+}
 
-# Rust: usa el instalado o lo instala con rustup en ~/.cargo (sin sudo).
-PATH="$HOME/.cargo/bin:$PATH"
-if ! command -v cargo >/dev/null 2>&1; then
-    info "$(m 'Rust no encontrado; instalando con rustup en ~/.cargo' 'Rust not found; installing it with rustup in ~/.cargo' 'Rust introuvable ; installation avec rustup dans ~/.cargo')"
-    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
-fi
-export PATH
-info "$(m 'Usando' 'Using' 'Utilisation de') $(cargo --version)"
-
-TMP="$(mktemp -d)"
-trap 'rm -rf "$TMP"' EXIT INT TERM
-
-info "$(m 'Descargando' 'Downloading' 'Téléchargement de') $REPO@$REF"
-curl -fsSL "https://github.com/$REPO/archive/$REF.tar.gz" | tar -xz -C "$TMP" --strip-components=1
-# Versión exacta (commit), grabada en el programa.
-CONECTOR_COMMIT="$(curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/$REF" 2>/dev/null | cut -c1-7 || true)"
-export CONECTOR_COMMIT
-# Caché de compilación: las actualizaciones siguientes tardan mucho menos.
-CARGO_TARGET_DIR="$CACHE"
-export CARGO_TARGET_DIR
-
-if [ "${CONECTOR_SOLO_BINARIO:-0}" = 1 ]; then
-    info "$(m 'Compilando (la primera vez tarda unos minutos)' 'Building (the first time takes a few minutes)' 'Compilation (la première fois prend quelques minutes)')"
-    (cd "$TMP" && cargo build --release --locked)
-    cp "$CACHE/release/conector" "./conector"
-    chmod +x ./conector
-    info "$(m 'Listo' 'Done' 'Terminé'): $(pwd)/conector"
-    exit 0
-fi
-
-if [ "$OS" = "Darwin" ]; then
-    info "$(m 'Compilando y creando conector.app (la primera vez tarda unos minutos)' 'Building conector.app (the first time takes a few minutes)' 'Compilation de conector.app (la première fois prend quelques minutes)')"
-    # Si conector está abierto, pregunta (en la terminal) si cerrarlo y reabrirlo;
-    # desde «Buscar actualizaciones» de la propia app no se cierra (CONECTOR_NO_CERRAR=1).
-    sh "$TMP/empaquetar-mac.sh" instalar --si ${CONECTOR_NO_CERRAR:+--no-cerrar} ${CONECTOR_DESTINO:+--destino "$CONECTOR_DESTINO"}
-    guardar_idioma
-    info "$(m 'Listo. Abre conector desde Launchpad o Spotlight (Cmd+Espacio, «conector»).' 'Done. Open conector from Launchpad or Spotlight (Cmd+Space, “conector”).' 'Terminé. Ouvrez conector depuis Launchpad ou Spotlight (Cmd+Espace, « conector »).')"
-else
-    info "$(m 'Compilando (la primera vez tarda unos minutos)' 'Building (the first time takes a few minutes)' 'Compilation (la première fois prend quelques minutes)')"
-    (cd "$TMP" && cargo build --release --locked)
-    mkdir -p "$BIN_DIR" "$DATA/applications"
-    # Copia y renombra: el ejecutable en uso sigue funcionando hasta reiniciarlo.
-    cp "$CACHE/release/conector" "$BIN_DIR/.conector.nuevo"
+# Pone el ejecutable en su sitio (Linux) y crea la entrada del menú.
+colocar_bin() {
+    mkdir -p "$BIN_DIR"
+    # Copia + rename: el ejecutable en uso sigue funcionando hasta reiniciarlo.
+    cp "$1" "$BIN_DIR/.conector.nuevo"
     chmod +x "$BIN_DIR/.conector.nuevo"
     mv -f "$BIN_DIR/.conector.nuevo" "$BIN_DIR/conector"
-    # Iconos en varios tamaños; cada uno se escribe aparte y se renombra para que
-    # GNOME nunca lea (y guarde en caché) un PNG a medio escribir.
-    if "$BIN_DIR/conector" --iconset "$TMP/iconos"; then
-        for t in $ICON_SIZES; do
-            case $t in 64) f=icon_32x32@2x.png ;; *) f="icon_${t}x${t}.png" ;; esac
-            d="$DATA/icons/hicolor/${t}x${t}/apps"
-            mkdir -p "$d" && cp "$TMP/iconos/$f" "$d/.conector.png.nuevo" && mv -f "$d/.conector.png.nuevo" "$d/conector.png"
-        done
-        touch "$DATA/icons/hicolor" 2>/dev/null || true
-    fi
-    cat > "$DATA/applications/conector.desktop" <<DESKTOP
+    ruta="$BIN_DIR/conector"
+    if [ -z "${CONECTOR_DESTINO:-}" ]; then
+        # Ícono generado por la propia app; cada PNG se escribe aparte y se renombra
+        # para que GNOME nunca lea (y guarde en caché) uno a medio escribir.
+        ic="$(mktemp -d)"
+        if "$ruta" --iconset "$ic" 2>/dev/null; then
+            for t in $ICON_SIZES; do
+                case $t in 64) f=icon_32x32@2x.png ;; *) f="icon_${t}x${t}.png" ;; esac
+                d="$DATA/icons/hicolor/${t}x${t}/apps"
+                mkdir -p "$d" && cp "$ic/$f" "$d/.conector.png.nuevo" && mv -f "$d/.conector.png.nuevo" "$d/conector.png"
+            done
+            # GNOME/GTK solo vuelve a leer los íconos si cambia la fecha de la carpeta del tema.
+            touch "$DATA/icons/hicolor" 2>/dev/null || true
+        fi
+        rm -rf "$ic"
+        mkdir -p "$DATA/applications"
+        cat > "$DATA/applications/conector.desktop" <<DESKTOP
 [Desktop Entry]
 Type=Application
 Name=conector
 Comment=Probar y compartir conexiones JDBC
 Comment[en]=Test and share JDBC connections
 Comment[fr]=Tester et partager des connexions JDBC
-Exec=$BIN_DIR/conector
+Exec=$ruta
 Icon=conector
 Terminal=false
 Categories=Development;Database;
 StartupWMClass=conector
 DESKTOP
-    command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
+        command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$DATA/applications" 2>/dev/null || true
+    fi
+    case ":$PATH:" in *":$BIN_DIR:"*) ;; *) info "$(m "Añade $BIN_DIR a tu PATH para abrirlo con «conector»." "Add $BIN_DIR to your PATH to run it as “conector”." "Ajoutez $BIN_DIR à votre PATH pour le lancer avec «conector».")" ;; esac
+}
+
+terminar() { # terminar versión
+    mkdir -p "$CONFIG"
+    echo "$1" > "$MARCA"
     guardar_idioma
-    info "$(m "Instalado: $BIN_DIR/conector (y en el menú de aplicaciones)" "Installed: $BIN_DIR/conector (and in the applications menu)" "Installé : $BIN_DIR/conector (et dans le menu des applications)")"
-    case ":$PATH:" in *":$BIN_DIR:"*) ;; *) echo "   $(m "Nota: $BIN_DIR no está en tu PATH; añádelo para escribir «conector» en la terminal." "Note: $BIN_DIR is not in your PATH; add it to run “conector” from the terminal." "Remarque : $BIN_DIR n’est pas dans votre PATH ; ajoutez-le pour lancer « conector » depuis le terminal.")" ;; esac
-fi
-# La caché de compilación acelera las actualizaciones, pero cargo no borra lo
-# viejo: si pasa de 1 GB se vacía (la próxima compilación empieza de cero).
-if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 1048576 ]; then
-    rm -rf "$CACHE" && info "$(m 'Caché de compilación vaciada (pasaba de 1 GB)' 'Build cache emptied (it was over 1 GB)' 'Cache de compilation vidé (il dépassait 1 Go)')"
-fi
-echo "   $(m 'Para actualizar más adelante: ⚙ Ajustes → «Buscar actualizaciones…», o vuelve a ejecutar este comando.' 'To update later: ⚙ Settings → “Check for updates…”, or run this command again.' 'Pour mettre à jour plus tard : ⚙ Réglages → « Rechercher des mises à jour… », ou relancez cette commande.')"
-# Java hace falta para los drivers JDBC; si no lo hay, la app ofrece uno portátil.
-if ! command -v java >/dev/null 2>&1 && [ -z "${JAVA_HOME:-}" ]; then
-    echo "   $(m 'Java no encontrado: al abrir conector, pulsa «⬇ Descargar Java portátil».' 'Java not found: when you open conector, press “⬇ Download portable Java”.' 'Java introuvable : à l’ouverture de conector, appuyez sur « ⬇ Télécharger Java portable ».')"
-fi
+    info "$(m "Instalado $1 en $ruta" "Installed $1 in $ruta" "$1 installé dans $ruta")"
+    # Java hace falta para los drivers JDBC; si no lo hay, la app ofrece uno portátil.
+    if ! command -v java >/dev/null 2>&1 && [ -z "${JAVA_HOME:-}" ]; then
+        info "$(m 'Java no encontrado: al abrir conector, pulsa «⬇ Descargar Java portátil».' 'Java not found: when you open conector, press “⬇ Download portable Java”.' 'Java introuvable : à l’ouverture de conector, appuyez sur « ⬇ Télécharger Java portable ».')"
+    fi
+    info "$(m 'Para actualizar más adelante: ⚙ Ajustes → «Buscar actualizaciones…», o vuelve a ejecutar este comando.' 'To update later: ⚙ Settings → “Check for updates…”, or run this command again.' 'Pour mettre à jour plus tard : ⚙ Réglages → « Rechercher des mises à jour… », ou relancez cette commande.')"
+    # Para el actualizador de la app (no depende del idioma). Las dos últimas
+    # líneas son las que buscan las versiones de la app anteriores a Releases.
+    echo "RUTA_INSTALADA=$ruta"
+    if [ "$OS" = "Darwin" ]; then echo "==> Instalada en $ruta"; else echo "==> Instalado: $ruta"; fi
+}
+
+# ------------------------------------------------------------ instalar (descarga)
+instalar() {
+    command -v curl >/dev/null 2>&1 || fail "$(m 'Hace falta curl.' 'curl is required.' 'curl est nécessaire.')"
+    if [ -z "$PLATAFORMA" ]; then
+        info "$(m "No hay versión publicada para $(uname -m): se compila en este equipo." "No published build for $(uname -m): building on this machine." "Pas de version publiée pour $(uname -m) : compilation sur cette machine.")"
+        compilar
+        return
+    fi
+    tag="$(version_remota || true)"
+    if [ -z "$tag" ]; then
+        if pregunta "$(m "No se encontró ninguna versión publicada. ¿Compilar en este equipo?" "No published version found. Build on this machine?" "Aucune version publiée. Compiler sur cette machine ?")"; then compilar; return; fi
+        fail "$(m "No se encontró ninguna versión publicada en https://github.com/$REPO/releases" "No published version found at https://github.com/$REPO/releases" "Aucune version publiée sur https://github.com/$REPO/releases")"
+    fi
+    if [ "$(cat "$MARCA" 2>/dev/null || true)" = "$tag" ] && instalado >/dev/null && [ "$ACCION" != "instalar" ]; then
+        info "$(m "Ya tienes la versión más reciente ($tag)." "You already have the latest version ($tag)." "Vous avez déjà la dernière version ($tag).")"
+        return 0
+    fi
+    archivo="conector-${tag#v}-$PLATAFORMA.$EXT"
+    url="https://github.com/$REPO/releases/download/$tag/$archivo"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    info "$(m "Descargando $archivo…" "Downloading $archivo…" "Téléchargement de $archivo…")"
+    if ! curl -fL --progress-bar -o "$tmp/$archivo" "$url"; then
+        if pregunta "$(m "No se pudo descargar $url. ¿Compilar en este equipo?" "Could not download $url. Build on this machine?" "Impossible de télécharger $url. Compiler sur cette machine ?")"; then compilar; return; fi
+        fail "$(m "No se pudo descargar $url" "Could not download $url" "Impossible de télécharger $url")"
+    fi
+    if [ "$OS" = "Darwin" ]; then
+        ditto -x -k "$tmp/$archivo" "$tmp/x"
+        [ -d "$tmp/x/conector.app" ] || fail "$(m 'El archivo descargado no contiene conector.app' 'The download does not contain conector.app' "Le téléchargement ne contient pas conector.app")"
+        # Sin firma de Apple: se quita la cuarentena para que abra sin avisos.
+        xattr -dr com.apple.quarantine "$tmp/x/conector.app" 2>/dev/null || true
+        colocar_app "$tmp/x/conector.app"
+    else
+        tar -xzf "$tmp/$archivo" -C "$tmp"
+        colocar_bin "$tmp/conector-${tag#v}-$PLATAFORMA/conector"
+    fi
+    terminar "$tag"
+}
+
+# ------------------------------------------------------------ compilar
+compilar() {
+    command -v curl >/dev/null 2>&1 || fail "$(m 'Hace falta curl.' 'curl is required.' 'curl est nécessaire.')"
+    command -v cc >/dev/null 2>&1 || fail "$(m 'Hace falta un compilador de C (cc).' 'A C compiler (cc) is required.' 'Un compilateur C (cc) est nécessaire.')
+  Debian/Ubuntu: sudo apt install build-essential
+  Fedora:        sudo dnf install gcc
+  Arch:          sudo pacman -S base-devel
+  macOS:         xcode-select --install"
+    # Rust: usa el instalado o lo instala con rustup en ~/.cargo (sin sudo).
+    PATH="$HOME/.cargo/bin:$PATH"
+    export PATH
+    if ! command -v cargo >/dev/null 2>&1; then
+        info "$(m 'Rust no encontrado; instalando con rustup en ~/.cargo' 'Rust not found; installing it with rustup in ~/.cargo' 'Rust introuvable ; installation avec rustup dans ~/.cargo')"
+        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+    fi
+    # rustup instalado pero sin toolchain por defecto: se elige la estable.
+    if ! cargo --version >/dev/null 2>&1 && command -v rustup >/dev/null 2>&1; then
+        rustup default stable || true
+    fi
+    cargo --version >/dev/null 2>&1 || fail "$(m 'Rust no funciona en este equipo (cargo --version falló).' 'Rust does not work on this machine (cargo --version failed).' 'Rust ne fonctionne pas sur cette machine (cargo --version a échoué).')"
+    info "$(m 'Usando' 'Using' 'Utilisation de') $(cargo --version)"
+    # Commit que se compila (queda grabado en el programa).
+    CONECTOR_COMMIT="$(curl -fsSL -H 'Accept: application/vnd.github.sha' "https://api.github.com/repos/$REPO/commits/$REF" 2>/dev/null | cut -c1-7 || true)"
+    export CONECTOR_COMMIT
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "$tmp"' EXIT
+    info "$(m "Descargando el código ($REF)…" "Downloading the source ($REF)…" "Téléchargement du code ($REF)…")"
+    curl -fsSL "https://github.com/$REPO/archive/$REF.tar.gz" | tar -xz -C "$tmp" --strip-components=1 || fail "$(m "No se pudo descargar el código de $REPO ($REF)" "Could not download the source of $REPO ($REF)" "Impossible de télécharger le code de $REPO ($REF)")"
+    # La caché acelera las compilaciones siguientes; cargo no borra lo viejo: si
+    # pasa de 3 GB se vacía (la próxima empieza de cero).
+    if [ -d "$CACHE" ] && [ "$(du -sk "$CACHE" | cut -f1)" -gt 3145728 ]; then
+        rm -rf "$CACHE" && info "$(m 'Caché de compilación vaciada (pasaba de 3 GB)' 'Build cache emptied (it was over 3 GB)' 'Cache de compilation vidé (il dépassait 3 Go)')"
+    fi
+    CARGO_TARGET_DIR="$CACHE"
+    export CARGO_TARGET_DIR
+    info "$(m 'Compilando (la primera vez tarda unos minutos)…' 'Building (the first time takes a few minutes)…' 'Compilation (la première fois prend quelques minutes)…')"
+    (cd "$tmp" && cargo build --release --locked) || fail "$(m 'La compilación falló.' 'The build failed.' 'La compilation a échoué.')"
+    if [ "${CONECTOR_SOLO_BINARIO:-0}" = 1 ]; then
+        cp "$CACHE/release/conector" "./conector"
+        chmod +x ./conector
+        info "$(m 'Listo' 'Done' 'Terminé'): $(pwd)/conector"
+        exit 0
+    fi
+    if [ "$OS" = "Darwin" ]; then
+        # El paquete (ícono, Info.plist, firma local) lo arma empaquetar-mac.sh.
+        BINARIO="$CACHE/release/conector" CARGO_TARGET_DIR="$tmp/target" sh "$tmp/empaquetar-mac.sh" crear
+        colocar_app "$tmp/target/release/conector.app"
+    else
+        colocar_bin "$CACHE/release/conector"
+    fi
+    terminar "$REF${CONECTOR_COMMIT:+@$CONECTOR_COMMIT}"
+}
+
+# ------------------------------------------------------------ menú
+case "$ACCION" in
+    instalar | install | actualizar | update) instalar ;;
+    compilar | build) compilar ;;
+    desinstalar | --desinstalar | uninstall) desinstalar ;;
+    "")
+        if ruta="$(instalado)"; then
+            actual="$(cat "$MARCA" 2>/dev/null || echo '?')"
+            if hay_terminal; then
+                printf '%s\n  1) %s\n  2) %s\n  3) %s\n' "$(m "conector $actual ya está instalado ($ruta)." "conector $actual is already installed ($ruta)." "conector $actual est déjà installé ($ruta).")" \
+                    "$(m 'Actualizar' 'Update' 'Mettre à jour')" "$(m 'Desinstalar' 'Uninstall' 'Désinstaller')" "$(m 'Cancelar' 'Cancel' 'Annuler')" > /dev/tty
+                leer "[1-3] (Enter = 1): "
+                case "${r:-1}" in
+                    1) instalar ;;
+                    2) desinstalar ;;
+                    *) info "$(m 'Nada que hacer.' 'Nothing to do.' 'Rien à faire.')" ;;
+                esac
+            else
+                instalar
+            fi
+        elif hay_terminal; then
+            if pregunta "$(m '¿Instalar conector?' 'Install conector?' 'Installer conector ?')"; then instalar; else info "$(m 'Cancelado.' 'Cancelled.' 'Annulé.')"; fi
+        else
+            instalar
+        fi
+        ;;
+    *) fail "$(m "Acción desconocida: $ACCION (usa instalar, compilar o desinstalar)" "Unknown action: $ACCION (use install, build or uninstall)" "Action inconnue : $ACCION (utilisez install, build ou uninstall)")" ;;
+esac

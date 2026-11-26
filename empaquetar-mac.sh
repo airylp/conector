@@ -3,6 +3,8 @@
 #
 #   ./empaquetar-mac.sh                 menú interactivo
 #   ./empaquetar-mac.sh crear           compila y crea target/release/conector.app
+#                                       (con BINARIO=ruta no compila: empaqueta ese ejecutable;
+#                                        lo usa .github/workflows/release.yml con el universal)
 #   ./empaquetar-mac.sh instalar        crea la app (si compila bien) y la copia a /Applications
 #   ./empaquetar-mac.sh actualizar      trae los últimos cambios (git), recompila y reemplaza la instalada
 #   ./empaquetar-mac.sh desinstalar     quita la app y pregunta por la configuración
@@ -98,12 +100,16 @@ cerrar_si_abierta() {
 }
 
 crear() {
-    echo "==> $(m 'Compilando…' 'Building…' 'Compilation…')"
+    [ -n "${BINARIO:-}" ] || echo "==> $(m 'Compilando…' 'Building…' 'Compilation…')"
     # La versión (commit) queda grabada en el programa.
     # (Si ya viene dada —install.sh desde un .tar.gz sin git— se respeta.)
     CONECTOR_COMMIT="${CONECTOR_COMMIT:-$(git rev-parse --short HEAD 2>/dev/null || echo "")}"
     export CONECTOR_COMMIT
-    if ! cargo build --release; then
+    if [ -n "${BINARIO:-}" ]; then
+        BIN="$BINARIO"
+    elif cargo build --release; then
+        BIN="$OUT/conector"
+    else
         echo "$(m 'La compilación falló: no se crea ni se instala nada.' 'The build failed: nothing was created or installed.' 'La compilation a échoué : rien n’a été créé ni installé.')" >&2
         exit 1
     fi
@@ -112,12 +118,12 @@ crear() {
     trap 'rm -rf "$TMP"' EXIT
 
     # Ícono: los PNG salen del propio programa (la «B» pixelada) e iconutil arma el .icns.
-    "$OUT/conector" --iconset "$TMP/conector.iconset"
+    "$BIN" --iconset "$TMP/conector.iconset"
     iconutil -c icns "$TMP/conector.iconset" -o "$TMP/conector.icns"
 
     rm -rf "$APP"
     mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
-    cp "$OUT/conector" "$APP/Contents/MacOS/conector"
+    cp "$BIN" "$APP/Contents/MacOS/conector"
     cp "$TMP/conector.icns" "$APP/Contents/Resources/conector.icns"
     cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

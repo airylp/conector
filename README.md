@@ -5,18 +5,31 @@ guardarlas y compartirlas entre equipos y programas. Los drivers son los jar de
 siempre: un pequeño proceso Java auxiliar (incrustado en el binario, 41 KB)
 habla JDBC y la interfaz habla con él por stdin/stdout.
 
+![conector con una consulta sobre H2 (tema grafito claro)](docs/conector-claro.png)
+
 ## Instalar
+
+macOS y Linux (descarga la última versión publicada; vuelve a ejecutarlo para actualizar o
+desinstalar):
 
     curl -fsSL https://raw.githubusercontent.com/airylp/conector/main/install.sh | sh
 
-(macOS crea `conector.app`; Linux, `~/.local/bin/conector` con entrada en el menú;
-Windows: instalador de `.github/workflows/windows.yml` o `install.ps1`.)
+macOS crea `conector.app` en /Applications; Linux, `~/.local/bin/conector` con entrada en el menú.
+Para compilarlo con lo último de `main`: `… | sh -s -- compilar` (instala Rust si falta).
 
-Para actualizar: ⚙ Ajustes → «Buscar actualizaciones…» (la app avisa al
-arrancar si hay versión nueva), o vuelve a ejecutar el comando.
+Windows (PowerShell), o el instalador `conector-…-setup.exe` de
+[Releases](https://github.com/airylp/conector/releases/latest):
+
+    [Net.ServicePointManager]::SecurityProtocol = 'Tls12'; irm https://raw.githubusercontent.com/airylp/conector/main/install.ps1 | iex
+
+Para actualizar: ⚙ Ajustes → «Buscar actualizaciones…» (la app avisa si hay versión nueva), o
+vuelve a ejecutar el comando. Las compilaciones no están firmadas: en macOS ábrela la primera vez
+con clic derecho → Abrir; en Windows, «Más información» → «Ejecutar de todas formas».
 
 Necesita Java 8+ para los drivers. Si no hay, la app ofrece **⬇ Descargar Java
 portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
+
+![Datos de una conexión (tema grafito oscuro)](docs/conector-oscuro.png)
 
 ## Uso
 
@@ -143,6 +156,6 @@ confianza).
 
 ## Desarrollo
 
-    cargo test --release                       # 31 tests
+    cargo test --release                       # ~38 tests
     cargo test --release descargas -- --ignored  # descargas reales (red)
     scripts/compilar-auxiliar.sh               # tras cambiar ConectorHelper.java
