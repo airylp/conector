@@ -29,7 +29,7 @@ con clic derecho → Abrir; en Windows, «Más información» → «Ejecutar de 
 Necesita Java 8+ para los drivers. Si no hay, la app ofrece **⬇ Descargar Java
 portátil** (JRE 21 de Eclipse Temurin en la carpeta de configuración).
 
-![Datos de una conexión (tema grafito oscuro)](docs/conector-oscuro.png)
+![Datos de una conexión](docs/conector-conexion.png)
 
 ## Uso
 
